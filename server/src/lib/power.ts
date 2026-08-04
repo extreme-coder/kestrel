@@ -226,3 +226,60 @@ export function windPowerDensityKw(
 
 /** Betz limit: the maximum fraction of wind power any rotor can extract. */
 export const BETZ_LIMIT = 16 / 27
+
+/**
+ * Thrust coefficient in Region 2, where the rotor tracks maximum power extraction.
+ *
+ * This is an *empirical* value. The tempting derivation — actuator-disc momentum theory,
+ * where Cp = 4a(1-a)² and Ct = 4a(1-a) — is wrong here, and wrong in a direction that
+ * matters: Cp = 0.45 solves to a ≈ 0.159 and therefore Ct ≈ 0.53, against a measured
+ * ≈0.8 for real utility-scale machines.
+ *
+ * The reason is that `DEFAULT_POWER_COEFFICIENT` is an *electrical* Cp. Drivetrain
+ * losses, blade drag and tip losses all destroy power without removing any additional
+ * momentum from the flow, so inverting them through momentum theory under-reads the
+ * thrust. Anchor the level empirically instead; momentum theory is still trusted for the
+ * *shape* above rated, where it is only being asked how induction must change.
+ */
+export const DEFAULT_REGION2_THRUST_COEFFICIENT = 0.8
+
+/**
+ * Rotor thrust coefficient Ct at a given hub-height wind speed.
+ *
+ * Ct is the wake model's driving input: it sets the fraction of axial momentum the rotor
+ * removes, and hence the depth of the velocity deficit downstream. It is *not* a power
+ * quantity, but it lives here because it is a property of the machine — the wake model
+ * consumes it, it doesn't own it.
+ *
+ * Uses the model's measured `thrustCurve` when present. Otherwise a two-region fallback
+ * mirroring `powerCurveOutputKw`:
+ *
+ *   Region 2 — constant at `DEFAULT_REGION2_THRUST_COEFFICIENT`. Real machines are close
+ *              to flat here, dipping only near cut-in.
+ *   Region 3 — decays as (v_knee / v)³. Momentum theory gives the exponent: holding
+ *              power constant in P = 2ρAv³·a(1-a)² requires a(1-a)² ∝ v⁻³, and for the
+ *              small induction factors above rated, Ct = 4a(1-a) ≈ 4a ∝ v⁻³. Physically,
+ *              the blades pitch to shed load, so thrust falls rather than holding.
+ *
+ * Outside [cut-in, cut-out] the rotor is parked or feathered and extracts no momentum, so
+ * Ct is 0. (A parked rotor does have real parasitic drag; it casts no meaningful wake and
+ * the turbine behind it is generating nothing either way.)
+ *
+ * The v⁻³ decay tracks published curves well — for a V80-2000 it gives Ct ≈ 0.34 at
+ * 15 m/s and ≈0.07 at 25 m/s, against measured ≈0.30 and ≈0.08. A constant-thrust
+ * (v⁻²) assumption would read ≈0.45 at 15 m/s, ~50% high.
+ */
+export function thrustCoefficient(model: TurbineModel, windSpeedMs: number): number {
+  if (!Number.isFinite(windSpeedMs)) return 0
+  if (windSpeedMs < model.cutInMs || windSpeedMs > model.cutOutMs) return 0
+
+  if (model.thrustCurve && model.thrustCurve.length > 0) {
+    return Math.min(Math.max(interpolateCurve(model.thrustCurve, windSpeedMs), 0), 1)
+  }
+
+  const kneeMs = ratedTransitionSpeedMs(model)
+  if (!(kneeMs > 0) || windSpeedMs <= kneeMs) {
+    return DEFAULT_REGION2_THRUST_COEFFICIENT
+  }
+  return DEFAULT_REGION2_THRUST_COEFFICIENT * (kneeMs / windSpeedMs) ** 3
+}

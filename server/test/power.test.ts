@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   BETZ_LIMIT,
   DEFAULT_POWER_COEFFICIENT,
+  DEFAULT_REGION2_THRUST_COEFFICIENT,
   REFERENCE_AIR_DENSITY,
   airDensity,
   densityCorrectedPowerKw,
@@ -12,6 +13,7 @@ import {
   ratedTransitionSpeedMs,
   saturationVapourPressurePa,
   shearExponent,
+  thrustCoefficient,
   windPowerDensityKw,
 } from '../src/lib/power.js'
 import { TURBINE_MODELS, getTurbineModel, sweptAreaM2 } from '../src/lib/turbines.js'
@@ -385,5 +387,68 @@ describe('wind power density', () => {
     const a = windPowerDensityKw(v112, 5)
     const b = windPowerDensityKw(v112, 10)
     expect(b / a).toBeCloseTo(8, 6)
+  })
+})
+
+describe('thrust coefficient', () => {
+  it('is zero outside the operating range', () => {
+    expect(thrustCoefficient(v112, v112.cutInMs - 0.1)).toBe(0)
+    expect(thrustCoefficient(v112, v112.cutOutMs + 0.1)).toBe(0)
+    expect(thrustCoefficient(v112, Number.NaN)).toBe(0)
+  })
+
+  it('holds flat through Region 2', () => {
+    const knee = ratedTransitionSpeedMs(v112)
+    for (const v of [5, 7, 9, knee]) {
+      expect(thrustCoefficient(v112, v)).toBeCloseTo(DEFAULT_REGION2_THRUST_COEFFICIENT, 9)
+    }
+  })
+
+  it('decays as the inverse cube of wind speed above the knee', () => {
+    const knee = ratedTransitionSpeedMs(v112)
+    const lo = knee * 1.1
+    const hi = knee * 2.2
+    // Both samples must sit inside Region 3, or the cut-out zero makes this vacuous.
+    expect(lo).toBeGreaterThan(knee)
+    expect(hi).toBeLessThan(v112.cutOutMs)
+    // Doubling speed within Region 3 should cut Ct by 2³.
+    expect(thrustCoefficient(v112, lo) / thrustCoefficient(v112, hi)).toBeCloseTo(8, 6)
+  })
+
+  it('tracks measured values for a V80 within the tolerance the fallback claims', () => {
+    const v80 = getTurbineModel('vestas-v80-2000')!
+    // Published V80 thrust curves sit near 0.30 at 15 m/s and 0.08 at 25 m/s.
+    expect(thrustCoefficient(v80, 15)).toBeGreaterThan(0.25)
+    expect(thrustCoefficient(v80, 15)).toBeLessThan(0.42)
+    expect(thrustCoefficient(v80, 25)).toBeGreaterThan(0.04)
+    expect(thrustCoefficient(v80, 25)).toBeLessThan(0.12)
+  })
+
+  it('never leaves [0, 1] anywhere in any model operating range', () => {
+    for (const m of TURBINE_MODELS) {
+      for (let v = 0; v <= 30; v += 0.25) {
+        const ct = thrustCoefficient(m, v)
+        expect(ct, `${m.id} @ ${v}`).toBeGreaterThanOrEqual(0)
+        expect(ct, `${m.id} @ ${v}`).toBeLessThanOrEqual(1)
+      }
+    }
+  })
+
+  it('prefers a measured thrust curve over the parametric fallback', () => {
+    const measured: TurbineModel = {
+      ...v112,
+      thrustCurve: [
+        [3, 0.75],
+        [10, 0.7],
+        [25, 0.05],
+      ],
+    }
+    expect(thrustCoefficient(measured, 10)).toBeCloseTo(0.7, 9)
+    // Halfway between the 10 and 25 m/s points.
+    expect(thrustCoefficient(measured, 17.5)).toBeCloseTo(0.375, 9)
+    expect(thrustCoefficient(measured, 10)).not.toBeCloseTo(
+      thrustCoefficient(v112, 10),
+      3,
+    )
   })
 })

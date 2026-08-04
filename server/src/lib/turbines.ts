@@ -41,6 +41,17 @@ export interface TurbineModel {
    * When present, takes precedence over the parametric model.
    */
   curve?: ReadonlyArray<readonly [number, number]>
+  /**
+   * Measured thrust curve as [windSpeed m/s, Ct] pairs, ascending by speed. Ct is
+   * dimensionless and lies in [0, 1].
+   *
+   * Drives the wake model rather than the power model — Ct sets how much momentum the
+   * rotor removes from the flow, and therefore how deep a wake it casts on the turbines
+   * behind it. Empty for every model here for the same reason `curve` is: the
+   * manufacturer source is gone. `thrustCoefficient` in `power.ts` falls back to a
+   * parametric model, and this field takes precedence with no other code change.
+   */
+  thrustCurve?: ReadonlyArray<readonly [number, number]>
 }
 
 export const TURBINE_MODELS: readonly TurbineModel[] = [
