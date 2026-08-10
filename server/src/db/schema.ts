@@ -20,6 +20,18 @@ CREATE TABLE IF NOT EXISTS wind_cache (
 
 CREATE INDEX IF NOT EXISTS idx_wind_cache_fetched_at ON wind_cache (fetched_at);
 
+CREATE TABLE IF NOT EXISTS base_flow_cache (
+  key          TEXT PRIMARY KEY,
+  payload      TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS field_cache (
+  key          TEXT PRIMARY KEY,
+  payload      BLOB NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS area_requests (
   id             TEXT PRIMARY KEY,
   session_id     TEXT NOT NULL,

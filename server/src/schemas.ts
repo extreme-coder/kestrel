@@ -63,6 +63,60 @@ export const ListAreaRequestsSchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 })
 
+const finiteNumber = z.number().finite()
+
+export const FieldRequestSchema = z.object({
+  terrain: z.object({
+    site_id: z.string().min(1).max(128),
+    origin_easting_m: finiteNumber,
+    origin_northing_m: finiteNumber,
+    columns: z.number().int().min(2).max(257),
+    rows: z.number().int().min(2).max(257),
+    cell_size_easting_m: z.number().positive().finite(),
+    cell_size_northing_m: z.number().positive().finite(),
+    elevations_m: z.array(finiteNumber).max(257 * 257),
+  }),
+  layout: z.object({
+    turbine: z.string().min(1),
+    rows: z.number().int().min(1).max(20),
+    columns: z.number().int().min(1).max(20),
+    crosswind_spacing_d: z.number().positive().finite().default(6),
+    downwind_spacing_d: z.number().positive().finite().default(8),
+    hub_height_m: z.number().positive().max(300).default(100),
+    stagger_fraction: finiteNumber.default(0),
+    origin_easting_m: finiteNumber.default(0),
+    origin_northing_m: finiteNumber.default(0),
+  }),
+  wind: z.object({
+    bearing_deg: finiteNumber,
+    speed_ms: z.number().nonnegative().finite(),
+    reference_height_m: z.number().positive().finite().default(100),
+    shear_exponent: z.number().min(0).max(1).finite().default(1 / 7),
+    turbulence_intensity: z.number().positive().max(1).finite().default(0.1),
+  }),
+  volume: z.object({
+    levels: z.number().int().min(1).max(128).default(16),
+    top_elevation_m: finiteNumber,
+  }),
+  alpha_horizontal_vertical_ratio: z.number().positive().finite().default(1),
+}).superRefine((value, context) => {
+  if (value.terrain.elevations_m.length !== value.terrain.columns * value.terrain.rows) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['terrain', 'elevations_m'],
+      message: `must contain ${value.terrain.columns * value.terrain.rows} values`,
+    })
+  }
+  if ((value.terrain.columns - 1) * (value.terrain.rows - 1) * value.volume.levels > 250_000) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['volume'], message: 'volume must not exceed 250000 cells' })
+  }
+  if (value.layout.rows * value.layout.columns > 100) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['layout'], message: 'layout must not exceed 100 turbines' })
+  }
+})
+
+export type FieldRequestBody = z.infer<typeof FieldRequestSchema>
+
 /** Reject a range that is inverted or longer than the archive usefully serves. */
 export function validateDateRange(from: string, to: string): string | null {
   const start = Date.parse(`${from}T00:00:00Z`)

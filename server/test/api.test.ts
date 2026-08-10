@@ -129,6 +129,31 @@ describe('API', () => {
     })
   })
 
+  describe('POST /api/field', () => {
+    const body = {
+      terrain: { site_id: 'flat', origin_easting_m: 0, origin_northing_m: 0, columns: 5, rows: 5, cell_size_easting_m: 500, cell_size_northing_m: 500, elevations_m: Array(25).fill(0) },
+      layout: { turbine: 'vestas-v112-3450', rows: 1, columns: 1, hub_height_m: 100, origin_easting_m: 1000, origin_northing_m: 1000 },
+      wind: { bearing_deg: 270, speed_ms: 10 },
+      volume: { levels: 4, top_elevation_m: 500 },
+    }
+
+    it('returns and caches a KFLD binary volume', async () => {
+      const first = await app.request('/api/field', postJson(body))
+      expect(first.status).toBe(200)
+      expect(first.headers.get('content-type')).toBe('application/vnd.kestrel.field')
+      expect(first.headers.get('x-kestrel-cache')).toBe('miss')
+      expect(new TextDecoder().decode((await first.arrayBuffer()).slice(0, 4))).toBe('KFLD')
+      const second = await app.request('/api/field', postJson(body))
+      expect(second.headers.get('x-kestrel-cache')).toBe('hit')
+    })
+
+    it('validates JSON, turbine ids, and terrain dimensions', async () => {
+      expect((await app.request('/api/field', { method: 'POST', body: 'x' })).status).toBe(400)
+      expect((await app.request('/api/field', postJson({ ...body, layout: { ...body.layout, turbine: 'nope' } }))).status).toBe(404)
+      expect((await app.request('/api/field', postJson({ ...body, terrain: { ...body.terrain, elevations_m: [0] } }))).status).toBe(400)
+    })
+  })
+
   describe('GET /api/wind', () => {
     const query = 'lat=50.8&lon=-0.2&height=100&turbine=vestas-v112-3450&date_from=2019-01-01&date_to=2019-01-02'
 

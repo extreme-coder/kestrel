@@ -6,12 +6,14 @@ import { streamSSE } from 'hono/streaming'
 import type { DB } from './db/index.js'
 import type { AnnealingService, AreaRequestRow } from './lib/annealingService.js'
 import type { ProgressBus, ProgressEvent } from './lib/events.js'
+import { FieldService } from './lib/field.js'
 import { WindSourceError } from './lib/openmeteo.js'
 import { predict } from './lib/prediction.js'
 import { TURBINE_MODELS, getTurbineModel, sweptAreaM2 } from './lib/turbines.js'
 import type { WindCache } from './lib/windCache.js'
 import {
   CreateAreaRequestSchema,
+  FieldRequestSchema,
   ListAreaRequestsSchema,
   WindQuerySchema,
   validateDateRange,
@@ -64,6 +66,7 @@ function serialiseRequest(row: AreaRequestRow) {
 export function createApp(deps: AppDeps): Hono {
   const { db, windCache, annealing, bus } = deps
   const heartbeatMs = deps.sseHeartbeatMs ?? 15_000
+  const fields = new FieldService(db)
 
   const app = new Hono()
 
@@ -111,6 +114,34 @@ export function createApp(deps: AppDeps): Hono {
       })),
     }),
   )
+
+  app.post('/api/field', async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'invalid_request', message: 'body must be JSON' }, 400)
+    }
+    const parsed = FieldRequestSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json({ error: 'invalid_request', issues: parsed.error.issues.map(formatIssue) }, 400)
+    }
+    const model = getTurbineModel(parsed.data.layout.turbine)
+    if (!model) {
+      return c.json(
+        { error: 'unknown_turbine', message: `no such turbine: ${parsed.data.layout.turbine}` },
+        404,
+      )
+    }
+    const result = fields.build(parsed.data, model)
+    return new Response(result.payload, {
+      headers: {
+        'content-type': 'application/vnd.kestrel.field',
+        'cache-control': 'public, max-age=31536000, immutable',
+        'x-kestrel-cache': result.cacheHit ? 'hit' : 'miss',
+      },
+    })
+  })
 
   /**
    * Point prediction. Mirrors the original
