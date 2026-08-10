@@ -54,6 +54,14 @@ describe('terrain-responsive wake composition', () => {
       .toEqual({ east: 6, north: 0, up: 0 })
   })
 
+  it('accepts a decimal-terrain sample reconstructed at the top layer centre', () => {
+    const field = uniformField(6)
+    field.groundElevationsM.fill(0.1)
+    const elevationM = 0.1 + (2.5 / 3) * (field.topElevationM - 0.1)
+    expect(sampleBaseFlow(field, { eastingM: 150, northingM: 100, elevationM }))
+      .toEqual({ east: 6, north: 0, up: 0 })
+  })
+
   it('integrates a uniform field downstream at a fixed spatial step', () => {
     const points = integrateStreamline(
       uniformField(8),

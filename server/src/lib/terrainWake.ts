@@ -98,8 +98,13 @@ function sampleOrNull(field: BaseFlowField, point: FlowPoint): FlowVector | null
 
   // Solver values sit at terrain-following layer centres, not at the ground/top faces.
   const sigma = (point.elevationM - ground) / (field.topElevationM - ground)
-  const gz = sigma * field.levels - 0.5
-  if (gz < 0 || gz > field.levels - 1) return null
+  const rawGz = sigma * field.levels - 0.5
+  // A cell centre reconstructed as `ground + fraction * (top - ground)` can land a few
+  // ulps beyond the last layer when real DEM elevations are decimal values. Keep actual
+  // ground/top faces out, but snap mathematically valid layer centres to the domain.
+  const tolerance = 1e-9
+  if (rawGz < -tolerance || rawGz > field.levels - 1 + tolerance) return null
+  const gz = Math.max(0, Math.min(field.levels - 1, rawGz))
   const [x0, x1, tx] = interpolationPair(gx, field.columns)
   const [y0, y1, ty] = interpolationPair(gy, field.rows)
   const [z0, z1, tz] = interpolationPair(gz, field.levels)

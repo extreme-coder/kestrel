@@ -45,7 +45,7 @@ function AnalysisPanel() {
       <Separator />
       <div>
         <p className="eyebrow">Field conditions</p>
-        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="1" unit="V112" /></dl>
+        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="4" unit="V112" /></dl>
       </div>
       <Separator />
       <div>
@@ -78,7 +78,7 @@ function SiteInfo({ onClose }: { onClose: () => void }) {
       <h3 className="text-sm font-semibold">Why one site?</h3>
       <p className="mt-1.5 text-sm leading-relaxed text-white/70">One terrain dataset keeps the first accuracy and frame-time tests comparable. More sites come after this case is validated.</p>
       <h3 className="mt-4 text-sm font-semibold">Next</h3>
-      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Load the measured terrain, render the server velocity field, and test it against the published measurements.</p>
+      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Compare the terrain-responsive field with published hilltop speed-up measurements.</p>
     </section>
   );
 }
