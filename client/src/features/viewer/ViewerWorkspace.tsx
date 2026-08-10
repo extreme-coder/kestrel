@@ -1,14 +1,14 @@
 import {
+  useEffect,
   useRef,
   useState,
-  type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
-  type WheelEvent,
 } from "react";
 import { ChevronDown, Compass, Gauge, Info, Layers3, Move3d, Play, RotateCcw, Settings2, Wind, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { SpatialFieldViewport } from "@/features/spatial-field/SpatialFieldViewport";
 
 const SPEED_STOPS = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"];
 
@@ -45,7 +45,7 @@ function AnalysisPanel() {
       <Separator />
       <div>
         <p className="eyebrow">Field conditions</p>
-        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="12" unit="V112" /></dl>
+        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="1" unit="V112" /></dl>
       </div>
       <Separator />
       <div>
@@ -87,6 +87,7 @@ function ScenePreview() {
   const [view, setView] = useState(INITIAL_VIEW);
   const [isDragging, setIsDragging] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const viewport = useRef<HTMLElement>(null);
   const dragOrigin = useRef({ x: 0, y: 0 });
 
   const updateView = (changes: Partial<ViewState>) => {
@@ -112,10 +113,19 @@ function ScenePreview() {
     }));
   };
 
-  const handleWheel = (event: WheelEvent<HTMLElement>) => {
-    event.preventDefault();
-    setView((current) => ({ ...current, zoom: clamp(current.zoom - event.deltaY * 0.001, 0.78, 1.35) }));
-  };
+  useEffect(() => {
+    const element = viewport.current;
+    if (!element) return;
+    const handleWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      setView((current) => ({ ...current, zoom: clamp(current.zoom - event.deltaY * 0.001, 0.78, 1.35) }));
+    };
+    // Capture before R3F's canvas event layer sees trackpad pinch/wheel input. In Chrome,
+    // pinch-to-zoom arrives as a cancelable ctrl+wheel event; a bubbling listener can be
+    // too late if the canvas consumes it first.
+    element.addEventListener("wheel", handleWheel, { capture: true, passive: false });
+    return () => element.removeEventListener("wheel", handleWheel, true);
+  }, []);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     const changes: Partial<ViewState> = {};
@@ -132,6 +142,7 @@ function ScenePreview() {
 
   return (
     <section
+      ref={viewport}
       className={isDragging ? "scene-preview is-dragging" : "scene-preview"}
       aria-label="Three-dimensional wind field viewport"
       aria-description="Use arrow keys to rotate. Use plus and minus to zoom."
@@ -140,13 +151,10 @@ function ScenePreview() {
       onPointerMove={handlePointerMove}
       onPointerUp={() => setIsDragging(false)}
       onPointerCancel={() => setIsDragging(false)}
-      onWheel={handleWheel}
       onKeyDown={handleKeyDown}
     >
-      <div className="scene-world" data-testid="scene-world" style={{ "--yaw": `${view.yaw}deg`, "--pitch": `${view.pitch}px`, "--zoom": view.zoom } as CSSProperties}>
-        <div className="terrain-grid" aria-hidden="true" /><div className="hill hill-back" aria-hidden="true" /><div className="hill hill-front" aria-hidden="true" />
-        <div className="flow-lines" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i key={index} style={{ "--i": index } as CSSProperties} />)}</div>
-        <div className="turbine t-one" aria-hidden="true"><i /><b /></div><div className="turbine t-two" aria-hidden="true"><i /><b /></div><div className="turbine t-three" aria-hidden="true"><i /><b /></div>
+      <div className="scene-world" data-testid="scene-world">
+        <SpatialFieldViewport view={view} />
       </div>
       <div className="absolute left-5 top-5 flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] backdrop-blur-md"><span className="size-1.5 rounded-full bg-lime-300 shadow-[0_0_12px_#bef264]" /> Desktop preview</div>
       <div className="absolute right-5 top-5 flex gap-2">
@@ -156,7 +164,7 @@ function ScenePreview() {
       </div>
       {infoOpen ? <SiteInfo onClose={() => setInfoOpen(false)} /> : null}
       <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-4">
-        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md"><p className="eyebrow text-lime-300">Field preview</p><p className="mt-2 text-sm leading-relaxed text-white/70">The live terrain and velocity field are the next build step.</p></div>
+        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md"><p className="eyebrow text-lime-300">Live field</p><p className="mt-2 text-sm leading-relaxed text-white/70">GPU-advected particles show the computed three-dimensional velocity field.</p></div>
         <div className="hidden rounded-full border border-white/10 bg-black/30 px-4 py-2 text-[10px] text-white/60 backdrop-blur-md sm:block">Drag to rotate · Scroll to zoom</div>
       </div>
     </section>

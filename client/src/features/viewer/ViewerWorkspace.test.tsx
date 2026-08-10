@@ -2,6 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ViewerWorkspace } from "./ViewerWorkspace";
 
+vi.mock("@/features/spatial-field/SpatialFieldViewport", () => ({
+  SpatialFieldViewport: ({ view }: { view: { yaw: number; pitch: number; zoom: number } }) => (
+    <div data-testid="spatial-field" data-yaw={view.yaw} data-pitch={view.pitch} data-zoom={view.zoom} />
+  ),
+}));
+
 describe("ViewerWorkspace", () => {
   it("exposes the viewer landmarks and current field conditions", () => {
     render(<ViewerWorkspace />);
@@ -9,6 +15,7 @@ describe("ViewerWorkspace", () => {
     expect(screen.getByRole("region", { name: /three-dimensional wind field/i })).toBeInTheDocument();
     expect(screen.getByText("Askervein Hill")).toBeInTheDocument();
     expect(screen.getByRole("slider", { name: /wind bearing/i })).toHaveValue("210");
+    expect(screen.getByTestId("spatial-field")).toBeInTheDocument();
   });
 
   it("toggles the mobile control panel", async () => {
@@ -34,18 +41,19 @@ describe("ViewerWorkspace", () => {
   it("rotates and zooms the scene with keyboard controls", () => {
     render(<ViewerWorkspace />);
     const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
-    const world = screen.getByTestId("scene-world");
+    const field = screen.getByTestId("spatial-field");
 
     fireEvent.keyDown(viewport, { key: "ArrowRight" });
     fireEvent.keyDown(viewport, { key: "+" });
 
-    expect(world).toHaveStyle({ "--yaw": "2deg", "--zoom": "1.08" });
+    expect(field).toHaveAttribute("data-yaw", "2");
+    expect(field).toHaveAttribute("data-zoom", "1.08");
   });
 
   it("rotates on drag and zooms on wheel", () => {
     render(<ViewerWorkspace />);
     const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
-    const world = screen.getByTestId("scene-world");
+    const field = screen.getByTestId("spatial-field");
     Object.defineProperty(viewport, "setPointerCapture", { value: () => undefined });
 
     const pointerEvent = (type: string, x: number, y: number) => {
@@ -61,8 +69,14 @@ describe("ViewerWorkspace", () => {
     pointerEvent("pointerdown", 100, 100);
     pointerEvent("pointermove", 150, 120);
     pointerEvent("pointerup", 150, 120);
-    fireEvent.wheel(viewport, { deltaY: -100 });
+    // R3F owns the nested canvas in production, so exercise the capture path from a
+    // descendant rather than dispatching directly on the viewport.
+    const wheel = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: -100 });
+    fireEvent(field, wheel);
 
-    expect(world).toHaveStyle({ "--yaw": "4deg", "--pitch": "-1px", "--zoom": "1.1" });
+    expect(field).toHaveAttribute("data-yaw", "4");
+    expect(field).toHaveAttribute("data-pitch", "-1");
+    expect(field).toHaveAttribute("data-zoom", "1.1");
+    expect(wheel.defaultPrevented).toBe(true);
   });
 });
