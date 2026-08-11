@@ -25,8 +25,19 @@ function CameraRig({ view }: { view: SpatialFieldView }) {
   return null;
 }
 
-export function SpatialFieldViewport({ reducedMotion = false, view }: { reducedMotion?: boolean; view: SpatialFieldView }) {
-  const request = useMemo(() => ASKERVEIN_FIELD_REQUEST, []);
+export function SpatialFieldViewport({
+  bearingDeg = ASKERVEIN_FIELD_REQUEST.wind.bearing_deg,
+  reducedMotion = false,
+  view,
+}: {
+  bearingDeg?: number;
+  reducedMotion?: boolean;
+  view: SpatialFieldView;
+}) {
+  const request = useMemo(() => ({
+    ...ASKERVEIN_FIELD_REQUEST,
+    wind: { ...ASKERVEIN_FIELD_REQUEST.wind, bearing_deg: bearingDeg },
+  }), [bearingDeg]);
   const result = useVelocityField(request);
   if (result.status === "loading") return <div className="field-state" role="status">Computing velocity field…</div>;
   if (result.status === "error") return <div className="field-state field-error" role="alert">{result.error}. Start the Kestrel server and retry.</div>;
