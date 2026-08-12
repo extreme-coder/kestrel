@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "validate": "tsx scripts/validate.ts",
-    "validate:anchors": "tsx scripts/validateAnchors.ts"
+    "validate:anchors": "tsx scripts/validateAnchors.ts",
+    "choose:bearing": "tsx scripts/chooseAlternateBearing.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",
