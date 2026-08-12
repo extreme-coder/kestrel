@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { cors } from 'hono/cors'
 import { HTTPException } from 'hono/http-exception'
 import { streamSSE } from 'hono/streaming'
@@ -9,8 +10,15 @@ import type { ProgressBus, ProgressEvent } from './lib/events.js'
 import { FieldService } from './lib/field.js'
 import { WindSourceError } from './lib/openmeteo.js'
 import { predict } from './lib/prediction.js'
-import { PHYSICS_MODEL_VERSION, getResultClaim, serialiseProvenance } from './lib/provenance.js'
+import {
+  ANALYSIS_QUANTITY_CLAIMS,
+  PHYSICS_MODEL_VERSION,
+  WAKE_LOSS_FRAMING,
+  getResultClaim,
+  serialiseProvenance,
+} from './lib/provenance.js'
 import { TURBINE_MODELS, getTurbineModel, sweptAreaM2 } from './lib/turbines.js'
+import type { TurbineModel } from './lib/turbines.js'
 import type { WindCache } from './lib/windCache.js'
 import {
   CreateAreaRequestSchema,
@@ -19,6 +27,7 @@ import {
   WindQuerySchema,
   validateDateRange,
 } from './schemas.js'
+import type { FieldRequestBody } from './schemas.js'
 
 export interface AppDeps {
   db: DB
@@ -125,24 +134,10 @@ export function createApp(deps: AppDeps): Hono {
   app.get('/api/provenance', (c) => c.json(serialiseProvenance()))
 
   app.post('/api/field', async (c) => {
-    let body: unknown
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid_request', message: 'body must be JSON' }, 400)
-    }
-    const parsed = FieldRequestSchema.safeParse(body)
-    if (!parsed.success) {
-      return c.json({ error: 'invalid_request', issues: parsed.error.issues.map(formatIssue) }, 400)
-    }
-    const model = getTurbineModel(parsed.data.layout.turbine)
-    if (!model) {
-      return c.json(
-        { error: 'unknown_turbine', message: `no such turbine: ${parsed.data.layout.turbine}` },
-        404,
-      )
-    }
-    const result = fields.build(parsed.data, model)
+    const scene = await readSceneRequest(c)
+    if ('response' in scene) return scene.response
+    const { input, model } = scene
+    const result = fields.build(input, model)
     // The body is a velocity volume, so provenance travels in headers. A client that renders
     // this field without labelling it is presenting model output as observation; the two
     // claims below name what the volume actually is. Full record at GET /api/provenance.
@@ -156,6 +151,90 @@ export function createApp(deps: AppDeps): Hono {
         'x-kestrel-model-version': PHYSICS_MODEL_VERSION,
         'x-kestrel-provenance': 'computed',
         'x-kestrel-validation': `terrain-base-flow=${baseFlow?.validation};wake-deficit=${wake?.validation}`,
+      },
+    })
+  })
+
+  /**
+   * Per-turbine numbers for the same scene `/api/field` draws.
+   *
+   * It takes the identical body deliberately: one request object describes one scene, and a
+   * viewer that could send subtly different bodies to the two endpoints would show a picture
+   * of one farm beside a table about another. The volume and these figures are read off a
+   * single solve — see `FieldService.resolveScene`.
+   */
+  app.post('/api/analysis', async (c) => {
+    const scene = await readSceneRequest(c)
+    if ('response' in scene) return scene.response
+    const { input, model } = scene
+    const { analysis } = fields.analyse(input, model)
+
+    return c.json({
+      model_version: PHYSICS_MODEL_VERSION,
+      wind: {
+        bearing_deg: input.wind.bearing_deg,
+        speed_ms: input.wind.speed_ms,
+        reference_height_m: input.wind.reference_height_m,
+        turbulence_intensity: input.wind.turbulence_intensity,
+      },
+      layout: {
+        turbine: model.id,
+        turbine_name: model.name,
+        rotor_diameter_m: model.rotorDiameterM,
+        rated_power_kw: model.ratedPowerKw,
+        // Echoed because it is the difference between "the wind turned" and "the farm
+        // turned", and a client comparing two bearings has to be able to tell.
+        orientation_bearing_deg: input.layout.orientation_bearing_deg ?? input.wind.bearing_deg,
+        count: analysis.turbines.length,
+      },
+      turbines: analysis.turbines.map((turbine) => ({
+        id: turbine.turbineId,
+        easting_m: turbine.eastingM,
+        northing_m: turbine.northingM,
+        ground_elevation_m: turbine.groundElevationM,
+        hub_height_m: turbine.hubHeightM,
+        gross_speed_ms: turbine.grossSpeedMs,
+        incoming_speed_ms: turbine.incomingSpeedMs,
+        deficit: turbine.deficit,
+        thrust_coefficient: turbine.thrustCoefficient,
+        gross_power_kw: turbine.grossPowerKw,
+        net_power_kw: turbine.netPowerKw,
+        wake_loss_kw: turbine.wakeLossKw,
+        wake_loss_fraction: turbine.wakeLossFraction,
+        dominant_contributor_id: turbine.dominantContributorId,
+        wake_path: turbine.wakePath.map((point) => ({
+          easting_m: point.eastingM,
+          northing_m: point.northingM,
+          elevation_m: point.elevationM,
+          ground_elevation_m: point.groundElevationM,
+          distance_m: point.distanceM,
+        })),
+        contributors: turbine.contributors.map((contributor) => ({
+          turbine_id: contributor.turbineId,
+          deficit: contributor.deficit,
+          share: contributor.share,
+          attributed_loss_kw: contributor.attributedLossKw,
+          downwind_m: contributor.downwindM,
+          downwind_d: contributor.downwindD,
+          radial_m: contributor.radialM,
+          radial_d: contributor.radialD,
+        })),
+      })),
+      farm: {
+        total_gross_power_kw: analysis.totalGrossPowerKw,
+        total_net_power_kw: analysis.totalNetPowerKw,
+        total_wake_loss_kw: analysis.totalWakeLossKw,
+        farm_wake_loss_fraction: analysis.wakeLossFraction,
+        worst_turbine_id: analysis.worstTurbineId,
+      },
+      // Every figure above is model output over a composition nothing has measured. The map
+      // names the claim behind each one so a client can label the number it is about to
+      // render, and the framing sentence is the hedge D24 requires to travel with a loss.
+      provenance: {
+        model_version: PHYSICS_MODEL_VERSION,
+        result: 'computed',
+        wake_loss_framing: WAKE_LOSS_FRAMING,
+        quantities: ANALYSIS_QUANTITY_CLAIMS,
       },
     })
   })
@@ -407,4 +486,37 @@ export function createApp(deps: AppDeps): Hono {
 
 function formatIssue(issue: { path: (string | number)[]; message: string }) {
   return { path: issue.path.join('.'), message: issue.message }
+}
+
+/**
+ * Parse a scene request body and resolve its turbine, or produce the error response.
+ *
+ * Shared by `/api/field` and `/api/analysis` so the two cannot drift into accepting
+ * different bodies — they describe the same scene and are meant to be sent the same one.
+ */
+async function readSceneRequest(
+  c: Context,
+): Promise<{ input: FieldRequestBody; model: TurbineModel } | { response: Response }> {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    return { response: c.json({ error: 'invalid_request', message: 'body must be JSON' }, 400) }
+  }
+  const parsed = FieldRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return {
+      response: c.json({ error: 'invalid_request', issues: parsed.error.issues.map(formatIssue) }, 400),
+    }
+  }
+  const model = getTurbineModel(parsed.data.layout.turbine)
+  if (!model) {
+    return {
+      response: c.json(
+        { error: 'unknown_turbine', message: `no such turbine: ${parsed.data.layout.turbine}` },
+        404,
+      ),
+    }
+  }
+  return { input: parsed.data, model }
 }

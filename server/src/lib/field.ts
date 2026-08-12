@@ -4,11 +4,15 @@ import type { DB } from '../db/index.js'
 import type { FieldRequestBody } from '../schemas.js'
 import { solveMassConsistentBaseFlow } from './baseFlow.js'
 import type { BaseFlowField } from './baseFlow.js'
+import { analyseTerrainFarm } from './farmAnalysis.js'
+import type { FarmAnalysis } from './farmAnalysis.js'
 import { generateGridLayout } from './layout.js'
+import { PHYSICS_MODEL_VERSION } from './provenance.js'
 import { buildWakeStreamlines, sampleTerrainWakeField } from './terrainWake.js'
+import type { Streamline } from './terrainWake.js'
 import type { TerrainGrid } from './terrain.js'
 import type { TurbineModel } from './turbines.js'
-import { operatingThrustCoefficients } from './wake.js'
+import type { FarmTurbine } from './wake.js'
 
 const MAGIC = 'KFLD'
 export const FIELD_HEADER_BYTES = 64
@@ -77,18 +81,69 @@ export function encodeVelocityField(field: BaseFlowField, velocities: Float64Arr
   return output
 }
 
+/** The solved scene both the volume and the per-turbine numbers are read off. */
+export interface ResolvedScene {
+  field: BaseFlowField
+  turbines: FarmTurbine[]
+  streamlines: Map<string, Streamline>
+  analysis: FarmAnalysis
+}
+
 export class FieldService {
   constructor(private readonly db: DB, private readonly now: () => number = Date.now) {}
 
   build(input: FieldRequestBody, model: TurbineModel): { payload: Uint8Array; cacheHit: boolean } {
+    // Include resolved catalogue physics and the model version, not only the request JSON:
+    // changing a rotor, a Ct curve or the composition itself must invalidate an old volume
+    // even when the client submits a byte-identical body.
+    const fieldKey = digest({ input, model, version: PHYSICS_MODEL_VERSION })
+    const cached = this.db.prepare<[string], { payload: Buffer }>('SELECT payload FROM field_cache WHERE key = ?').get(fieldKey)
+    if (cached) return { payload: new Uint8Array(cached.payload), cacheHit: true }
+
+    const { field, turbines, streamlines, analysis } = this.resolveScene(input, model)
+    const velocities = new Float64Array(field.columns * field.rows * field.levels * 3)
+    let cursor = 0
+    for (let z = 0; z < field.levels; z++) for (let y = 0; y < field.rows; y++) for (let x = 0; x < field.columns; x++) {
+      const ground = field.groundElevationsM[y * field.columns + x]!
+      const sample = sampleTerrainWakeField(field, {
+        eastingM: field.originEastingM + x * field.cellSizeEastingM,
+        northingM: field.originNorthingM + y * field.cellSizeNorthingM,
+        elevationM: ground + ((z + 0.5) / field.levels) * (field.topElevationM - ground),
+      }, turbines, analysis.operatingCt, streamlines, input.wind.turbulence_intensity)
+      velocities[cursor++] = sample.velocity.east
+      velocities[cursor++] = sample.velocity.north
+      velocities[cursor++] = sample.velocity.up
+    }
+    const payload = encodeVelocityField(field, velocities)
+    this.db.prepare('INSERT INTO field_cache (key, payload, created_at) VALUES (?, ?, ?)')
+      .run(fieldKey, Buffer.from(payload), this.now())
+    return { payload, cacheHit: false }
+  }
+
+  /**
+   * Per-turbine metrics for the same scene the volume is drawn from.
+   *
+   * Deliberately not cached: it reuses the expensive cached base-flow solve and then costs
+   * one wake sample per turbine, so a cache would store more than it saves.
+   */
+  analyse(input: FieldRequestBody, model: TurbineModel): { analysis: FarmAnalysis; turbines: FarmTurbine[] } {
+    const { turbines, analysis } = this.resolveScene(input, model)
+    return { analysis, turbines }
+  }
+
+  /**
+   * Solve the base flow, place the layout, trace the wake axes, and resolve the operating
+   * state — everything `POST /api/field` and `POST /api/analysis` must agree about.
+   *
+   * The thrust coefficients come from the terrain-aware analysis rather than from `wake.ts`'s
+   * flat-plane `evaluateFarm`, so the wake depths drawn in the volume are the ones the
+   * reported numbers describe. Resolving them twice, two ways, is how a picture and a table
+   * come to disagree about which turbine is worst.
+   */
+  private resolveScene(input: FieldRequestBody, model: TurbineModel): ResolvedScene {
     if (input.terrain.elevations_m.length !== input.terrain.columns * input.terrain.rows) {
       throw new RangeError(`elevations_m must contain ${input.terrain.columns * input.terrain.rows} values`)
     }
-    // Include resolved catalogue physics, not only its id: changing a rotor/Ct curve must
-    // invalidate an old volume even when clients submit the same request JSON.
-    const fieldKey = digest({ input, model })
-    const cached = this.db.prepare<[string], { payload: Buffer }>('SELECT payload FROM field_cache WHERE key = ?').get(fieldKey)
-    if (cached) return { payload: new Uint8Array(cached.payload), cacheHit: true }
 
     const terrain: TerrainGrid = {
       siteId: input.terrain.site_id,
@@ -110,6 +165,7 @@ export class FieldService {
       levels: input.volume.levels,
       top_elevation_m: input.volume.top_elevation_m,
       alpha_horizontal_vertical_ratio: input.alpha_horizontal_vertical_ratio,
+      version: PHYSICS_MODEL_VERSION,
     }
     const baseKey = digest(baseSpec)
     const baseRow = this.db.prepare<[string], { payload: string }>('SELECT payload FROM base_flow_cache WHERE key = ?').get(baseKey)
@@ -150,25 +206,11 @@ export class FieldService {
       staggerFraction: input.layout.stagger_fraction,
       origin: { eastingM: input.layout.origin_easting_m, northingM: input.layout.origin_northing_m },
     })
-    const conditions = { freeStreamMs: scale, bearingDeg: input.wind.bearing_deg, turbulenceIntensity: input.wind.turbulence_intensity }
-    const operatingCt = operatingThrustCoefficients(layout.turbines, conditions)
     const streamlines = buildWakeStreamlines(field, layout.turbines)
-    const velocities = new Float64Array(field.columns * field.rows * field.levels * 3)
-    let cursor = 0
-    for (let z = 0; z < field.levels; z++) for (let y = 0; y < field.rows; y++) for (let x = 0; x < field.columns; x++) {
-      const ground = field.groundElevationsM[y * field.columns + x]!
-      const sample = sampleTerrainWakeField(field, {
-        eastingM: field.originEastingM + x * field.cellSizeEastingM,
-        northingM: field.originNorthingM + y * field.cellSizeNorthingM,
-        elevationM: ground + ((z + 0.5) / field.levels) * (field.topElevationM - ground),
-      }, layout.turbines, operatingCt, streamlines, input.wind.turbulence_intensity)
-      velocities[cursor++] = sample.velocity.east
-      velocities[cursor++] = sample.velocity.north
-      velocities[cursor++] = sample.velocity.up
-    }
-    const payload = encodeVelocityField(field, velocities)
-    this.db.prepare('INSERT INTO field_cache (key, payload, created_at) VALUES (?, ?, ?)')
-      .run(fieldKey, Buffer.from(payload), this.now())
-    return { payload, cacheHit: false }
+    const analysis = analyseTerrainFarm(field, layout.turbines, streamlines, {
+      bearingDeg: input.wind.bearing_deg,
+      turbulenceIntensity: input.wind.turbulence_intensity,
+    })
+    return { field, turbines: layout.turbines, streamlines, analysis }
   }
 }

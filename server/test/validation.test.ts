@@ -13,7 +13,13 @@ import {
   measuredSummitSpeedUp,
   runAskerveinCase,
 } from '../src/lib/validation/index.js'
-import { RESULT_CLAIMS, collectedLimitations, serialiseProvenance } from '../src/lib/provenance.js'
+import {
+  ANALYSIS_QUANTITY_CLAIMS,
+  RESULT_CLAIMS,
+  WAKE_LOSS_FRAMING,
+  collectedLimitations,
+  serialiseProvenance,
+} from '../src/lib/provenance.js'
 
 /**
  * The external anchors. Every other physics test in this suite asserts a shape or a
@@ -203,6 +209,35 @@ describe('provenance record', () => {
       expect(claim?.validation, id).toBe('externally-anchored')
       expect(claim?.provenance, id).toBe('computed')
     }
+  })
+
+  it('resolves every quantity the analysis reports to a real claim', () => {
+    // ADR 0004 / D25. The client picks a chip per rendered number out of this map, so a
+    // dangling id would silently render a figure with no provenance at all.
+    const ids = new Set(RESULT_CLAIMS.map((claim) => claim.id))
+    for (const [quantity, claims] of Object.entries(ANALYSIS_QUANTITY_CLAIMS)) {
+      expect(claims.length, quantity).toBeGreaterThan(0)
+      for (const id of claims) expect(ids.has(id), `${quantity} -> ${id}`).toBe(true)
+    }
+  })
+
+  it('refuses to call the composition the viewer draws validated', () => {
+    // Askervein has no turbines and Horns Rev has no hill. Two anchored layers do not make
+    // an anchored product, and the quantities built on top of both have to say so.
+    for (const id of ['hub-wind-speed', 'wake-attribution']) {
+      const claim = RESULT_CLAIMS.find((entry) => entry.id === id)
+      expect(claim?.validation, id).toBe('unvalidated')
+      expect(claim?.provenance, id).toBe('computed')
+      expect(claim?.note, id).toMatch(/anchor|hill|terrain/i)
+    }
+  })
+
+  it('carries the floor-not-a-bound framing wake losses have to be read with', () => {
+    // D24: the model recovers 82.9% of Horns Rev's measured array loss. One exported string
+    // so the server, the client and docs/VALIDATION.md cannot drift apart on the hedge.
+    expect(WAKE_LOSS_FRAMING).toMatch(/floor/i)
+    expect(WAKE_LOSS_FRAMING).toMatch(/not an upper limit/i)
+    expect(WAKE_LOSS_FRAMING).toMatch(/83%/)
   })
 
   it('states that the demonstration turbines are not a real farm', () => {

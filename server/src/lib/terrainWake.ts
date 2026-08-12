@@ -45,12 +45,26 @@ export interface Streamline {
   distanceM: number[]
 }
 
+/**
+ * One upstream turbine's share of the deficit, with the geometry that produced it.
+ *
+ * The distances are carried because attribution has to be checkable against the scene: "it
+ * is 6.2 rotor diameters upwind and its plume passes 14 m from the hub" is a statement a
+ * user can verify by looking, and a bare deficit fraction is not.
+ */
+export interface TerrainWakeContribution extends WakeContribution {
+  /** Distance along the curved wake axis from the source rotor, metres. */
+  downwindM: number
+  /** Perpendicular distance from that axis, metres. */
+  radialM: number
+}
+
 export interface TerrainWakeSample {
   speedMs: number
   baseSpeedMs: number
   deficit: number
   velocity: FlowVector
-  contributions: WakeContribution[]
+  contributions: TerrainWakeContribution[]
 }
 
 function finite(value: number, name: string): void {
@@ -275,7 +289,7 @@ export function sampleTerrainWakeField(
   const base = sampleBaseFlow(field, point)
   const baseSpeedMs = Math.hypot(base.east, base.north, base.up)
   const growthRate = wakeGrowthRate(turbulenceIntensity)
-  const contributions: WakeContribution[] = []
+  const contributions: TerrainWakeContribution[] = []
   for (const turbine of turbines) {
     const ct = operatingCt.get(turbine.id) ?? 0
     const line = streamlines.get(turbine.id)
@@ -289,7 +303,14 @@ export function sampleTerrainWakeField(
       ct,
       growthRate,
     )
-    if (deficit > 0) contributions.push({ turbineId: turbine.id, deficit })
+    if (deficit > 0) {
+      contributions.push({
+        turbineId: turbine.id,
+        deficit,
+        downwindM: relative.downwindM,
+        radialM: relative.radialM,
+      })
+    }
   }
   contributions.sort((a, b) => b.deficit - a.deficit)
   const deficit = combineDeficits(contributions.map(contribution => contribution.deficit))

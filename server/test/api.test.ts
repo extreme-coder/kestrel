@@ -27,6 +27,33 @@ interface ProvenanceResponse {
   }
 }
 
+interface AnalysisResponse {
+  layout: { orientation_bearing_deg: number; count: number }
+  turbines: {
+    id: string
+    easting_m: number
+    northing_m: number
+    gross_speed_ms: number
+    incoming_speed_ms: number
+    wake_loss_fraction: number
+    dominant_contributor_id: string | null
+    contributors: { turbine_id: string; share: number; downwind_d: number }[]
+  }[]
+  farm: {
+    total_gross_power_kw: number
+    total_net_power_kw: number
+    total_wake_loss_kw: number
+    farm_wake_loss_fraction: number
+    worst_turbine_id: string | null
+  }
+  provenance: {
+    model_version: string
+    result: string
+    wake_loss_framing: string
+    quantities: Record<string, string[] | undefined>
+  }
+}
+
 /** Synthetic field with a maximum near 50.8 N, 0.2 W. */
 function windAt(latitude: number, longitude: number): number {
   const d2 = (latitude - 50.8) ** 2 + (longitude + 0.2) ** 2
@@ -178,6 +205,73 @@ describe('API', () => {
       expect(res.headers.get('x-kestrel-model-version')).toBe(PHYSICS_MODEL_VERSION)
       expect(res.headers.get('x-kestrel-validation')).toContain('terrain-base-flow=externally-anchored')
       expect(res.headers.get('x-kestrel-validation')).toContain('wake-deficit=externally-anchored')
+    })
+  })
+
+  describe('POST /api/analysis', () => {
+    /** Two turbines, one 8 D directly behind the other at a westerly. */
+    const body = {
+      terrain: { site_id: 'flat', origin_easting_m: 0, origin_northing_m: 0, columns: 9, rows: 5, cell_size_easting_m: 500, cell_size_northing_m: 500, elevations_m: Array(45).fill(0) },
+      layout: { turbine: 'vestas-v112-3450', rows: 2, columns: 1, downwind_spacing_d: 8, hub_height_m: 100, orientation_bearing_deg: 270, origin_easting_m: 2000, origin_northing_m: 1000 },
+      wind: { bearing_deg: 270, speed_ms: 9, turbulence_intensity: 0.08 },
+      volume: { levels: 6, top_elevation_m: 600 },
+    }
+
+    it('reports per-turbine losses and ranks the upstream cause of each', async () => {
+      const res = await app.request('/api/analysis', postJson(body))
+      expect(res.status).toBe(200)
+      const result = (await res.json()) as AnalysisResponse
+
+      expect(result.turbines).toHaveLength(2)
+      const [upwind, downwind] = result.turbines
+      expect(upwind!.contributors).toEqual([])
+      expect(upwind!.wake_loss_fraction).toBe(0)
+      expect(downwind!.wake_loss_fraction).toBeGreaterThan(0.1)
+      expect(downwind!.incoming_speed_ms).toBeLessThan(downwind!.gross_speed_ms)
+      expect(downwind!.dominant_contributor_id).toBe(upwind!.id)
+      expect(downwind!.contributors[0]!.share).toBeCloseTo(1, 3)
+
+      expect(result.farm.worst_turbine_id).toBe(downwind!.id)
+      expect(result.farm.total_net_power_kw).toBeLessThan(result.farm.total_gross_power_kw)
+      expect(result.farm.farm_wake_loss_fraction).toBeGreaterThan(0)
+    })
+
+    it('takes the same body as /api/field, so the two describe one scene', async () => {
+      expect((await app.request('/api/field', postJson(body))).status).toBe(200)
+      expect((await app.request('/api/analysis', { method: 'POST', body: 'x' })).status).toBe(400)
+      expect((await app.request('/api/analysis', postJson({ ...body, layout: { ...body.layout, turbine: 'nope' } }))).status).toBe(404)
+      expect((await app.request('/api/analysis', postJson({ ...body, terrain: { ...body.terrain, elevations_m: [0] } }))).status).toBe(400)
+    })
+
+    it('keeps the layout still when only the wind turns', async () => {
+      // D26. A farm that rotates with the wind shows identical geometry at every bearing, so
+      // no wake relation ever changes and T3 has nothing to answer.
+      const turned = { ...body, wind: { ...body.wind, bearing_deg: 240 } }
+      const before = (await (await app.request('/api/analysis', postJson(body))).json()) as AnalysisResponse
+      const after = (await (await app.request('/api/analysis', postJson(turned))).json()) as AnalysisResponse
+
+      expect(after.layout.orientation_bearing_deg).toBe(270)
+      expect(after.turbines.map((t) => [t.easting_m, t.northing_m]))
+        .toEqual(before.turbines.map((t) => [t.easting_m, t.northing_m]))
+      expect(after.farm.farm_wake_loss_fraction).toBeLessThan(before.farm.farm_wake_loss_fraction)
+    })
+
+    it('names the claim behind every quantity it reports', async () => {
+      // ADR 0004 / D25: a reported quantity with no claim is a bug, not a default. The
+      // client attaches a provenance chip from this map, so an unlisted field renders bare.
+      const result = (await (await app.request('/api/analysis', postJson(body))).json()) as AnalysisResponse
+      expect(result.provenance.result).toBe('computed')
+      expect(result.provenance.model_version).toBe(PHYSICS_MODEL_VERSION)
+      expect(result.provenance.wake_loss_framing).toContain('floor')
+
+      const quantities = result.provenance.quantities
+      for (const key of Object.keys(result.turbines[0]!)) {
+        if (key === 'id') continue
+        expect(quantities[key], `turbine field ${key}`).toBeDefined()
+      }
+      for (const key of Object.keys(result.farm)) {
+        expect(quantities[key], `farm field ${key}`).toBeDefined()
+      }
     })
   })
 

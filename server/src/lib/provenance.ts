@@ -17,7 +17,7 @@
  * Bumped whenever a change moves the numbers the physics produces. Recorded alongside every
  * result so a saved figure can be traced to the model that produced it.
  */
-export const PHYSICS_MODEL_VERSION = '2026.08.1'
+export const PHYSICS_MODEL_VERSION = '2026.08.2'
 
 /** Date the anchors below were last re-derived. */
 export const VALIDATION_DATE = '2026-08-12'
@@ -156,6 +156,36 @@ export const RESULT_CLAIMS: readonly ResultClaim[] = [
     },
   },
   {
+    id: 'hub-wind-speed',
+    label: 'Rotor wind speed',
+    provenance: 'computed',
+    description:
+      'Wind speed arriving at a rotor: the terrain flow at that hub position, reduced by the ' +
+      'wakes of every turbine upwind of it.',
+    validation: 'unvalidated',
+    note:
+      'Both halves are anchored and their combination is not. Askervein validates the terrain ' +
+      'flow but has no turbines; Horns Rev validates the wakes but has no hill. Nothing ' +
+      'published combines a resolved hill with an instrumented array, so wakes over terrain ' +
+      'are unchecked. The terrain half is anchored only to 34 m above ground, and these rotors ' +
+      'sit at 100 m.',
+  },
+  {
+    id: 'wake-attribution',
+    label: 'Attribution',
+    provenance: 'computed',
+    description:
+      'Which upstream turbines account for a rotor\'s wake loss, and in what proportion. Shares ' +
+      'split the combined deficit by the same sum-of-squares weighting used to superpose it.',
+    validation: 'unvalidated',
+    note:
+      'Wakes do not combine linearly, so the share of a loss owed to one turbine among several ' +
+      'has no unique definition; this split is the one consistent with how the deficits were ' +
+      'combined, not a measurement. The ranking inherits every limitation of the wake and ' +
+      'terrain models underneath it, and no measurement campaign anchors attribution over ' +
+      'terrain. Treat the order as the model\'s account of the scene, not as an observed cause.',
+  },
+  {
     id: 'turbine-power',
     label: 'Power',
     provenance: 'computed',
@@ -243,6 +273,48 @@ export const RESULT_CLAIMS: readonly ResultClaim[] = [
     },
   },
 ] as const
+
+/**
+ * The sentence that has to travel with every wake-loss figure.
+ *
+ * The model recovers 82.9% of Horns Rev's measured array loss (D24), so a loss reported here
+ * is a floor. It lives as one exported string because the server, the client panel and
+ * `docs/VALIDATION.md` all have to say the same thing, and three copies of a hedge is two
+ * copies that can quietly stop matching the anchor.
+ */
+export const WAKE_LOSS_FRAMING =
+  'Modelled wake losses are a floor, not an upper limit. Against Horns Rev 1 this model ' +
+  'accounted for 83% of the measured array loss, so real losses are likely larger.'
+
+/**
+ * Which claims back each quantity `POST /api/analysis` reports. ADR 0004.
+ *
+ * A reported quantity absent from this map is a bug rather than an unlabelled default, and
+ * `test/validation.test.ts` enforces both directions: every key resolves to real claims, and
+ * every field in the response has a key.
+ */
+export const ANALYSIS_QUANTITY_CLAIMS: Readonly<Record<string, readonly string[]>> = {
+  ground_elevation_m: ['terrain-elevation'],
+  easting_m: ['farm-layout-geometry'],
+  northing_m: ['farm-layout-geometry'],
+  hub_height_m: ['farm-layout-geometry'],
+  gross_speed_ms: ['terrain-base-flow'],
+  incoming_speed_ms: ['hub-wind-speed'],
+  deficit: ['wake-deficit', 'hub-wind-speed'],
+  thrust_coefficient: ['thrust-coefficient'],
+  gross_power_kw: ['turbine-power', 'terrain-base-flow'],
+  net_power_kw: ['turbine-power', 'hub-wind-speed'],
+  wake_loss_kw: ['wake-deficit', 'turbine-power'],
+  wake_loss_fraction: ['wake-deficit'],
+  contributors: ['wake-attribution'],
+  dominant_contributor_id: ['wake-attribution'],
+  wake_path: ['terrain-base-flow'],
+  total_gross_power_kw: ['turbine-power', 'terrain-base-flow'],
+  total_net_power_kw: ['turbine-power', 'hub-wind-speed'],
+  total_wake_loss_kw: ['wake-deficit', 'turbine-power'],
+  farm_wake_loss_fraction: ['wake-deficit'],
+  worst_turbine_id: ['wake-deficit'],
+} as const
 
 /**
  * The Askervein scene the viewer ships with.
