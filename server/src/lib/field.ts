@@ -142,7 +142,10 @@ export class FieldService {
       columns: input.layout.columns,
       crosswindSpacingD: input.layout.crosswind_spacing_d,
       downwindSpacingD: input.layout.downwind_spacing_d,
-      prevailingBearingDeg: input.wind.bearing_deg,
+      // Falling back to the wind bearing keeps a bare layout request behaving as a layout
+      // generator should. A scene that lets the user change direction must send this, or
+      // the array rotates with the wind and no wake relation ever changes (D26).
+      prevailingBearingDeg: input.layout.orientation_bearing_deg ?? input.wind.bearing_deg,
       hubHeightM: input.layout.hub_height_m,
       staggerFraction: input.layout.stagger_fraction,
       origin: { eastingM: input.layout.origin_easting_m, northingM: input.layout.origin_northing_m },

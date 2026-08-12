@@ -45,6 +45,10 @@ export const ASKERVEIN_FIELD_REQUEST = {
     crosswind_spacing_d: ASKERVEIN_LAYOUT.crosswindSpacingD,
     downwind_spacing_d: ASKERVEIN_LAYOUT.downwindSpacingD,
     hub_height_m: ASKERVEIN_LAYOUT.hubHeightM,
+    // Pinned to the design bearing while the wind turns (D26). Omit it and the server
+    // orients the array to whatever direction is being asked about, which presents identical
+    // geometry at every bearing — no wake relation ever changes, and T3 has no answer.
+    orientation_bearing_deg: ASKERVEIN_LAYOUT.bearingDeg,
     origin_easting_m: 1000,
     origin_northing_m: 1000,
   },

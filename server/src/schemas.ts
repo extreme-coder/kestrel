@@ -80,6 +80,16 @@ export const FieldRequestSchema = z.object({
     turbine: z.string().min(1),
     rows: z.number().int().min(1).max(20),
     columns: z.number().int().min(1).max(20),
+    /**
+     * Bearing the array is *built* against, independent of the wind blowing now.
+     *
+     * Omitting it orients the grid to the current wind, which is what a layout generator
+     * wants and what a viewer must never do: a farm that rotates with the wind presents
+     * identical geometry at every bearing, so per-turbine wake losses never reorder and
+     * "does this finding hold at another direction" has no answer. A scene that scrubs
+     * bearing has to pin this to its design bearing (D26).
+     */
+    orientation_bearing_deg: finiteNumber.optional(),
     crosswind_spacing_d: z.number().positive().finite().default(6),
     downwind_spacing_d: z.number().positive().finite().default(8),
     hub_height_m: z.number().positive().max(300).default(100),
