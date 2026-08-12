@@ -1,0 +1,318 @@
+/**
+ * Where every number Kestrel shows came from, and what has actually been checked.
+ *
+ * The viewer is being built to answer "which turbine is stealing whose energy", and it
+ * answers with precise figures. Precision is not accuracy: a wake loss of 18.4% renders
+ * exactly as confidently whether the model has been compared with a measurement or not.
+ * This module is the record that keeps those apart, and it is deliberately a single source
+ * for the API, the client disclosure and `docs/VALIDATION.md` so the three cannot disagree.
+ *
+ * Recorded results are findings, not live computations — a report states what was measured
+ * on a date. `test/validation.test.ts` re-derives each one and fails if the model has moved
+ * away from the recorded value, which is what stops this file becoming a historical claim
+ * about code that has since changed.
+ */
+
+/**
+ * Bumped whenever a change moves the numbers the physics produces. Recorded alongside every
+ * result so a saved figure can be traced to the model that produced it.
+ */
+export const PHYSICS_MODEL_VERSION = '2026.08.1'
+
+/** Date the anchors below were last re-derived. */
+export const VALIDATION_DATE = '2026-08-12'
+
+/**
+ * How a value came to exist.
+ *
+ * - `measured` — an instrument reading or a published measurement, carried through unchanged.
+ * - `derived` — a documented standard calculation over measured inputs, not Kestrel physics.
+ *   A reanalysis product, a shear exponent fitted from two levels, a thrust coefficient read
+ *   off a parametric fallback.
+ * - `computed` — output of a Kestrel model. Everything the viewer draws is this.
+ */
+export type Provenance = 'measured' | 'derived' | 'computed'
+
+/**
+ * How far the claim has been checked.
+ *
+ * - `externally-anchored` — compared against a published measurement, with an error metric.
+ * - `internally-tested` — invariants and relationships only. Shape assertions cannot catch a
+ *   calibration error; a 43% power-curve bias once passed every one of them.
+ * - `unvalidated` — neither.
+ */
+export type ValidationState = 'externally-anchored' | 'internally-tested' | 'unvalidated'
+
+export interface ExternalAnchor {
+  /** The measurement campaign or dataset. */
+  case: string
+  source: string
+  /** The conditions the comparison was made under. */
+  conditions: string
+  /** What was compared, and how the error is defined. */
+  metric: string
+  /** The finding, in the metric's own terms. */
+  result: string
+  /** What the anchor does not establish. Surfaced to the user, not just to the report. */
+  limitations: readonly string[]
+}
+
+export interface ResultClaim {
+  id: string
+  /** Short label for a provenance chip beside a number. */
+  label: string
+  provenance: Provenance
+  description: string
+  validation: ValidationState
+  anchor?: ExternalAnchor
+  /** Why the claim is not externally anchored. Required when it is not. */
+  note?: string
+}
+
+export const RESULT_CLAIMS: readonly ResultClaim[] = [
+  {
+    id: 'terrain-elevation',
+    label: 'Terrain',
+    provenance: 'measured',
+    description: 'Ground elevations under the scene, from the Copernicus DEM GLO-30 product.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Askervein Hill summit elevation',
+      source:
+        'Copernicus DEM GLO-30 tile Copernicus_DSM_COG_10_N57_00_W008_00_DEM (AWS Open Data). ' +
+        'Published summit elevation from Zhang (2009), Riso-R-1688(EN) section 4.1.',
+      conditions: '33 x 33 nodes at 62.5 m over a 2 km square centred on the summit.',
+      metric: 'Highest DEM node against the published HT mast elevation.',
+      result: '122.9 m against a published 123.79 m, 0.7% low.',
+      limitations: [
+        'GLO-30 is a surface model, so vegetation and structures sit in the elevations.',
+        'Published summit elevations disagree between sources (116 m, 123.79 m, 126 m above sea level) depending on whether relief or absolute height is meant.',
+        'At 62.5 m spacing the solver resolves the summit at 118.1 m, below the DEM peak, because it works on cell centres.',
+      ],
+    },
+  },
+  {
+    id: 'terrain-base-flow',
+    label: 'Terrain flow',
+    provenance: 'computed',
+    description:
+      'Mass-consistent wind field over the terrain, before turbine wakes. Sets the speed and ' +
+      'direction at every point in the volume.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Askervein Hill, run TU03-B',
+      source:
+        'Zhang (2009), CFD simulation of neutral ABL flows, Riso-R-1688(EN), Tables 4 and 5, ' +
+        'reproducing Askervein 83 run TU03-B. Campaign reference: Taylor and Teunissen (1987), ' +
+        'Boundary-Layer Meteorology 39, 15-39.',
+      conditions:
+        '210 degrees, near-neutral, 8.6 m/s at 10 m with shear exponent 0.17 fitted to the ' +
+        'measured reference-site profile. 32 levels to a 500 m lid, alphaH/alphaV left at the ' +
+        'documented default of 1.',
+      metric:
+        'Fractional speed-up at the hilltop mast, modelled against measured, at each height ' +
+        'the mast pair recorded and the grid resolves.',
+      result:
+        'Within 0.1% at 34 m above ground. The error grows toward the surface: -14.5% at 24 m, ' +
+        '-28.7% at 15 m, -32.0% at 8 m.',
+      limitations: [
+        'Nothing anchors the model above 34 m. The turbines sit at 100 m hub height, outside the measured range.',
+        'The model does not reproduce lee-side deceleration. At 400 m downwind of the summit it recovers 13% of the measured slowdown, because a mass-consistent field has no momentum equation and cannot separate.',
+        'Near-surface speed-up is under-predicted by up to a third. Do not read wind speeds close to the ground as measurements.',
+        'One site, one run, one direction. Neither stability nor a second terrain type has been tested.',
+        'The 500 m lid raises the modelled speed-up; a 1000 m lid gives 0.400 rather than 0.455 at 34 m.',
+        'The measured values are transcribed from a report reproducing the campaign tables, not from the campaign report itself. Two internal consistency checks pass, but a transcription error upstream would carry through.',
+      ],
+    },
+  },
+  {
+    id: 'wake-deficit',
+    label: 'Wake loss',
+    provenance: 'computed',
+    description:
+      'Velocity deficit behind each turbine and the power lost to it, from the ' +
+      'Bastankhah-Porte-Agel Gaussian wake with Katic sum-of-squares superposition.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Horns Rev 1, 8 +/- 0.5 m/s',
+      source:
+        'Gaumond, Rethore, Ott, Pena, Bechmann and Hansen (2013), "Evaluation of the wind ' +
+        'direction uncertainty and its impact on wake modeling at the Horns Rev offshore wind ' +
+        'farm", Wind Energy, doi:10.1002/we.1625, Table II.',
+      conditions:
+        '80 Vestas V80-2000 on a 7D parallelogram, hub 70 m, ambient turbulence intensity 7% ' +
+        'as measured at the site. Farm efficiency averaged over 270 +/- 15 degrees in 0.5 degree steps.',
+      metric: 'Farm efficiency, modelled against three years of production data.',
+      result:
+        '78.4% against a measured 73.9%, +4.5 percentage points. The model accounts for 82.9% ' +
+        'of the measured array loss.',
+      limitations: [
+        'The model under-reads array loss by about a sixth. Reported wake losses are a floor, not a bound.',
+        'Offshore, flat, one wind speed. Horns Rev says nothing about wakes over terrain, which is the case the viewer actually shows.',
+        'The narrow 270 +/- 2.5 degree sector is not usable as an anchor. Kestrel deviates -18.9 points there, alongside published deviations of -20.9 (Jensen), -20.9 (Larsen) and -21.7 (Fuga); the source attributes the gap to wind-direction uncertainty in the dataset rather than to the models.',
+        'Turbulence intensity is the dominant free input. 6% would halve the wide-sector error; 7% is used because it is the measured site value.',
+        'No wake-added turbulence, no wake deflection under yaw, no ground reflection.',
+      ],
+    },
+  },
+  {
+    id: 'turbine-power',
+    label: 'Power',
+    provenance: 'computed',
+    description:
+      'Electrical power at a given wind speed, from a two-region parametric curve: constant ' +
+      'power coefficient until the generator saturates, then flat at rated.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Vestas V80-2000 manufacturer power curve',
+      source: 'Published V80-2000 curve; comparison in docs/VALIDATION.md and test/power.test.ts.',
+      conditions: 'Point-by-point across the operating range at reference air density.',
+      metric: 'Absolute error against the published curve.',
+      result: 'Mean absolute error under 7%, no single point off by more than 16%.',
+      limitations: [
+        'No model in the catalogue carries a measured power curve; every one uses the parametric fallback.',
+        'Constant power coefficient ignores pitch roll-off near rated, which runs about 5% high there.',
+      ],
+    },
+  },
+  {
+    id: 'thrust-coefficient',
+    label: 'Thrust',
+    provenance: 'derived',
+    description:
+      'Thrust coefficient at the speed each turbine sees. Sets how deep a wake that turbine ' +
+      'casts, and is derived from a parametric fallback because no datasheet supplies it.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Vestas V80-2000 published thrust coefficients',
+      source: 'Published V80-2000 values; comparison in test/power.test.ts.',
+      conditions: 'Above and below rated wind speed.',
+      metric: 'Thrust coefficient against published values.',
+      result: 'About 0.30 at 15 m/s and 0.08 at 25 m/s, matching the published curve.',
+      limitations: [
+        'Anchored on one turbine. Every other model in the catalogue uses the same parametric shape without an independent check.',
+      ],
+    },
+  },
+  {
+    id: 'farm-layout-geometry',
+    label: 'Layout',
+    provenance: 'computed',
+    description: 'Turbine positions in a synthesized wind-aligned grid at conventional spacing.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'Horns Rev 1 footprint',
+      source: 'Published 560 m spacing and roughly 5 km by 3.8 km footprint; test/layout.test.ts.',
+      conditions: 'Same turbine count, spacing and orientation as the real array.',
+      metric: 'Reproduced footprint area.',
+      result: 'Within 1.2% on area.',
+      limitations: [
+        'Anchors the spacing convention only. It says nothing about the wake physics computed on top of the geometry.',
+      ],
+    },
+  },
+  {
+    id: 'wind-time-series',
+    label: 'Wind data',
+    provenance: 'derived',
+    description: 'Hourly wind speeds from the ERA5 reanalysis, via Open-Meteo.',
+    validation: 'internally-tested',
+    note:
+      'ERA5 is a reanalysis rather than a measurement, on a roughly 25 km grid. It resolves ' +
+      'synoptic weather, not local topographic acceleration, which makes it the dominant error ' +
+      'term at any complex-terrain site. Parsing and caching are tested; the values are not ' +
+      'compared against a mast.',
+  },
+  {
+    id: 'capacity-factor',
+    label: 'Capacity factor',
+    provenance: 'computed',
+    description: 'Annual capacity factor for a single turbine at a point.',
+    validation: 'externally-anchored',
+    anchor: {
+      case: 'North Sea and Baltic offshore capacity factors',
+      source: 'docs/VALIDATION.md, ten offshore farms against ERA5 2019.',
+      conditions: 'Gross output converted to net with standard planning losses of 0.838.',
+      metric: 'Net capacity factor against the established 0.32 to 0.55 band.',
+      result: 'Mean 0.426, with 9 of 10 sites inside the band.',
+      limitations: [
+        'One year. Inter-annual North Sea variability is roughly plus or minus 5%.',
+        'A band is not a reference value. This bounds the prediction rather than measuring its error.',
+        'The science-fair report the original was validated against cannot be used as ground truth: its reference column is mislabelled by a factor of 1000 and several rows imply capacity factors above 1.',
+      ],
+    },
+  },
+] as const
+
+/**
+ * The Askervein scene the viewer ships with.
+ *
+ * The terrain is measured and the campaign validates the flow over it. The turbines are
+ * invented. Those two facts have to travel together, because a rendered turbine on real
+ * terrain reads as a real wind farm and there is no wind farm at Askervein.
+ */
+export const DEMONSTRATION_SCENE = {
+  siteId: 'askervein-copernicus-glo30',
+  siteName: 'Askervein Hill, South Uist',
+  terrain: {
+    provenance: 'measured' as Provenance,
+    summary: 'Copernicus DEM GLO-30, 2 km square at 62.5 m.',
+  },
+  layout: {
+    provenance: 'computed' as Provenance,
+    status: 'synthetic-demonstration',
+    summary: 'Four V112 turbines placed on a synthesized grid.',
+    statement:
+      'No wind farm exists at Askervein. The four turbines are a demonstration layout, and ' +
+      'their output figures describe that invented layout, not the site.',
+  },
+  validates:
+    'The 1982-83 Askervein campaign validates how this model steers wind over the hill. It ' +
+    'says nothing about the turbines placed on it.',
+} as const
+
+/** Every limitation across anchored claims, deduplicated, for the client disclosure. */
+export function collectedLimitations(): string[] {
+  const seen = new Set<string>()
+  for (const claim of RESULT_CLAIMS) {
+    for (const limitation of claim.anchor?.limitations ?? []) seen.add(limitation)
+  }
+  return [...seen]
+}
+
+export function getResultClaim(id: string): ResultClaim | undefined {
+  return RESULT_CLAIMS.find((claim) => claim.id === id)
+}
+
+/** snake_case projection for the JSON API. */
+export function serialiseProvenance() {
+  return {
+    model_version: PHYSICS_MODEL_VERSION,
+    validated_at: VALIDATION_DATE,
+    results: RESULT_CLAIMS.map((claim) => ({
+      id: claim.id,
+      label: claim.label,
+      provenance: claim.provenance,
+      description: claim.description,
+      validation: claim.validation,
+      note: claim.note,
+      anchor: claim.anchor
+        ? {
+            case: claim.anchor.case,
+            source: claim.anchor.source,
+            conditions: claim.anchor.conditions,
+            metric: claim.anchor.metric,
+            result: claim.anchor.result,
+            limitations: [...claim.anchor.limitations],
+          }
+        : undefined,
+    })),
+    scene: {
+      site_id: DEMONSTRATION_SCENE.siteId,
+      site_name: DEMONSTRATION_SCENE.siteName,
+      terrain: { ...DEMONSTRATION_SCENE.terrain },
+      layout: { ...DEMONSTRATION_SCENE.layout },
+      validates: DEMONSTRATION_SCENE.validates,
+    },
+  }
+}

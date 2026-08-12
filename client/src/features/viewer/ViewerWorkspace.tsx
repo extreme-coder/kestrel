@@ -5,9 +5,13 @@ import {
   type KeyboardEvent,
   type PointerEvent,
 } from "react";
-import { ChevronDown, Compass, Gauge, Info, Layers3, Move3d, Pause, RotateCcw, Settings2, Wind, X } from "lucide-react";
+import { ChevronDown, Compass, FlaskConical, Gauge, Info, Layers3, Move3d, Pause, RotateCcw, Settings2, Wind, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { ModelDisclosure } from "@/features/provenance/ModelDisclosure";
+import { ProvenanceTag } from "@/features/provenance/ProvenanceTag";
+import { useProvenance } from "@/features/provenance/useProvenance";
+import type { ProvenanceState } from "@/features/provenance/useProvenance";
 import { SpatialFieldViewport } from "@/features/spatial-field/SpatialFieldViewport";
 
 const SPEED_STOPS = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"];
@@ -56,6 +60,7 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
       <div>
         <p className="eyebrow">Field conditions</p>
         <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="4" unit="V112" /></dl>
+        <p className="mt-4 text-xs leading-relaxed text-muted-foreground">Speed and turbulence are inputs to the model, not readings taken at Askervein.</p>
       </div>
       <Separator />
       <div>
@@ -76,19 +81,20 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function SiteInfo({ onClose }: { onClose: () => void }) {
+function SiteInfo({ onClose, onOpenAccuracy }: { onClose: () => void; onOpenAccuracy: () => void }) {
   return (
     <section className="site-info" aria-label="About this site">
       <div className="flex items-start justify-between gap-4">
         <div><p className="eyebrow text-lime-300">About this site</p><h2 className="mt-2 font-display text-xl">Why Askervein Hill?</h2></div>
         <Button size="icon" variant="ghost" className="-mr-2 -mt-2 size-8" onClick={onClose} aria-label="Close site information"><X className="size-4" /></Button>
       </div>
-      <p className="mt-3 text-sm leading-relaxed text-white/70">Published field measurements let us compare the model with observed wind over real terrain.</p>
+      <p className="mt-3 text-sm leading-relaxed text-white/70">The 1982&ndash;83 field campaign measured wind over this hill, so the model can be compared with instruments rather than with itself.</p>
       <Separator className="my-4" />
-      <h3 className="text-sm font-semibold">Why one site?</h3>
-      <p className="mt-1.5 text-sm leading-relaxed text-white/70">One terrain dataset keeps the first accuracy and frame-time tests comparable. More sites come after this case is validated.</p>
-      <h3 className="mt-4 text-sm font-semibold">Next</h3>
-      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Compare the terrain-responsive field with published hilltop speed-up measurements.</p>
+      <h3 className="text-sm font-semibold">Terrain <ProvenanceTag provenance="measured" /></h3>
+      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Copernicus DEM GLO&#8209;30, a 2 km square at 62.5 m spacing. The same elevations drive the picture and the calculation.</p>
+      <h3 className="mt-4 text-sm font-semibold">What the campaign checks</h3>
+      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Hilltop speed-up matches the measured value at 34 m above ground. Closer to the ground the model reads up to a third low, and it does not reproduce the slowdown in the hill&rsquo;s lee.</p>
+      <Button variant="outline" className="mt-4 w-full" onClick={onOpenAccuracy}><FlaskConical aria-hidden="true" className="size-3.5" /> View accuracy and limits</Button>
     </section>
   );
 }
@@ -101,15 +107,30 @@ function ComfortPanel({ reducedMotion, onReducedMotionChange, onClose }: { reduc
 }
 
 function TurbineInfo({ onClose }: { onClose: () => void }) {
-  return <section className="turbine-info" aria-label="Turbine information"><div className="flex items-start justify-between gap-4"><div><p className="eyebrow text-lime-300">Farm layout</p><h2 className="mt-2 font-display text-xl">Four V112 turbines</h2></div><Button size="icon" variant="ghost" className="-mr-2 -mt-2 size-8" onClick={onClose} aria-label="Close turbine information"><X className="size-4" /></Button></div><dl className="mt-4 grid grid-cols-2 gap-4"><Metric label="Rotor" value="112" unit="m" /><Metric label="Hub" value="100" unit="m" /><Metric label="Rows" value="2" unit="" /><Metric label="Columns" value="2" unit="" /></dl></section>;
+  return (
+    <section className="turbine-info" aria-label="Turbine information">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="eyebrow text-lime-300">Demonstration layout</p>
+          <h2 className="mt-2 font-display text-xl">Four V112 turbines</h2>
+        </div>
+        <Button size="icon" variant="ghost" className="-mr-2 -mt-2 size-8" onClick={onClose} aria-label="Close turbine information"><X className="size-4" /></Button>
+      </div>
+      {/* The terrain is real and the turbines are not. Rendered together they read as a
+          wind farm, so the panel that names them has to say otherwise. */}
+      <p className="mt-3 text-sm leading-relaxed text-white/70">No wind farm exists at Askervein. These four turbines are placed for demonstration, and their figures describe that invented layout <ProvenanceTag provenance="computed" /> rather than the site.</p>
+      <dl className="mt-4 grid grid-cols-2 gap-4"><Metric label="Rotor" value="112" unit="m" /><Metric label="Hub" value="100" unit="m" /><Metric label="Rows" value="2" unit="" /><Metric label="Columns" value="2" unit="" /></dl>
+    </section>
+  );
 }
 
-function ScenePreview({ bearing, reducedMotion, onReducedMotionChange }: { bearing: number; reducedMotion: boolean; onReducedMotionChange: (reduced: boolean) => void }) {
+function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenance }: { bearing: number; reducedMotion: boolean; onReducedMotionChange: (reduced: boolean) => void; provenance: ProvenanceState }) {
   const [view, setView] = useState(INITIAL_VIEW);
   const [isDragging, setIsDragging] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [turbinesOpen, setTurbinesOpen] = useState(false);
+  const [accuracyOpen, setAccuracyOpen] = useState(false);
   const [performanceOpen, setPerformanceOpen] = useState(true);
   const viewport = useRef<HTMLElement>(null);
   const dragOrigin = useRef({ x: 0, y: 0 });
@@ -184,14 +205,15 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange }: { beari
       <div className="absolute right-5 top-5 flex gap-2">
         <Button size="icon" variant="outline" onClick={() => setInfoOpen((open) => !open)} aria-label="About this site" aria-expanded={infoOpen}><Info className="size-4" /></Button>
         <Button size="icon" variant="outline" onClick={() => setView(INITIAL_VIEW)} aria-label="Reset view"><RotateCcw className="size-4" /></Button>
-        <Button size="icon" variant="outline" onClick={() => setTurbinesOpen((open) => !open)} aria-label="Show turbine information" aria-expanded={turbinesOpen}><Layers3 className="size-4" /></Button><Button size="icon" variant="outline" onClick={() => setSettingsOpen((open) => !open)} aria-label="Open viewer settings" aria-expanded={settingsOpen}><Settings2 className="size-4" /></Button>
+        <Button size="icon" variant="outline" onClick={() => setTurbinesOpen((open) => !open)} aria-label="Show turbine information" aria-expanded={turbinesOpen}><Layers3 className="size-4" /></Button><Button size="icon" variant="outline" onClick={() => setAccuracyOpen((open) => !open)} aria-label="Show model accuracy and limits" aria-expanded={accuracyOpen}><FlaskConical className="size-4" /></Button><Button size="icon" variant="outline" onClick={() => setSettingsOpen((open) => !open)} aria-label="Open viewer settings" aria-expanded={settingsOpen}><Settings2 className="size-4" /></Button>
       </div>
-      {infoOpen ? <SiteInfo onClose={() => setInfoOpen(false)} /> : null}
+      {infoOpen ? <SiteInfo onClose={() => setInfoOpen(false)} onOpenAccuracy={() => { setInfoOpen(false); setAccuracyOpen(true); }} /> : null}
       {settingsOpen ? <ComfortPanel reducedMotion={reducedMotion} onReducedMotionChange={onReducedMotionChange} onClose={() => setSettingsOpen(false)} /> : null}
       {turbinesOpen ? <TurbineInfo onClose={() => setTurbinesOpen(false)} /> : null}
+      {accuracyOpen ? <ModelDisclosure state={provenance} onClose={() => setAccuracyOpen(false)} /> : null}
       {performanceOpen ? <div className="absolute bottom-24 right-5 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-white/60 backdrop-blur-md" role="status">60 FPS target · 16.7 ms budget</div> : null}
       <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-4">
-        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md"><p className="eyebrow text-lime-300">Live field</p><p className="mt-2 text-sm leading-relaxed text-white/70">GPU-advected particles show the computed three-dimensional velocity field.</p></div>
+        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md"><div className="flex items-center gap-2"><p className="eyebrow text-lime-300">Live field</p><ProvenanceTag provenance="computed" /></div><p className="mt-2 text-sm leading-relaxed text-white/70">Particles follow a modelled velocity field, not recorded wind. Hilltop speed-up matches the Askervein measurements at 34 m; nearer the ground it reads low.</p></div>
         <button type="button" onClick={() => setPerformanceOpen((open) => !open)} aria-expanded={performanceOpen} className="hidden rounded-full border border-white/10 bg-black/30 px-4 py-2 text-[10px] text-white/60 backdrop-blur-md sm:block">{performanceOpen ? "Hide performance" : "Show performance"}</button>
       </div>
     </section>
@@ -202,13 +224,16 @@ export function ViewerWorkspace() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [bearing, setBearing] = useState(210);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
+  // Fetched once at the workspace root rather than inside the panel, so the model version
+  // is available to anything that displays a number without each consumer refetching.
+  const provenance = useProvenance();
   return (
     <main className="min-h-screen bg-background text-foreground">
       <header className="flex h-[76px] items-center justify-between border-b border-border px-5 lg:px-8"><Brand /><nav className="flex items-center gap-1" aria-label="Primary navigation"><Button variant="outline" aria-label="Enter immersive view"><Move3d className="size-4" /><span className="hidden sm:inline">Enter immersive view</span></Button></nav></header>
       <div className="workspace-grid">
         <div className={panelOpen ? "mobile-panel is-open" : "mobile-panel"}><AnalysisPanel bearing={bearing} onBearingChange={setBearing} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} /></div>
-        <ScenePreview bearing={bearing} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} />
-        <aside className="status-rail" aria-label="Performance status"><div className="flex items-center gap-2"><Gauge className="size-3.5 text-lime-300" /><span>Target 60 FPS</span></div><span className="text-muted-foreground">Desktop budget 16.7 ms</span><span className="ml-auto text-muted-foreground">WebGL 2</span></aside>
+        <ScenePreview bearing={bearing} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} provenance={provenance} />
+        <aside className="status-rail" aria-label="Performance status"><div className="flex items-center gap-2"><Gauge className="size-3.5 text-lime-300" /><span>Target 60 FPS</span></div><span className="text-muted-foreground">Desktop budget 16.7 ms</span><span className="text-muted-foreground">{provenance.status === "ready" ? `Model ${provenance.record.model_version}` : "Model version unavailable"}</span><span className="ml-auto text-muted-foreground">WebGL 2</span></aside>
       </div>
       <Button className="fixed bottom-5 left-5 z-50 lg:hidden" onClick={() => setPanelOpen((open) => !open)} aria-expanded={panelOpen}><Settings2 className="size-4" /> {panelOpen ? "Close controls" : "Field controls"}</Button>
     </main>

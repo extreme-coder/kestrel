@@ -7,8 +7,25 @@ import type { DB } from '../src/db/index.js'
 import { AnnealingService } from '../src/lib/annealingService.js'
 import { ProgressBus } from '../src/lib/events.js'
 import type { FetchLike } from '../src/lib/openmeteo.js'
+import { PHYSICS_MODEL_VERSION } from '../src/lib/provenance.js'
 import { WindCache } from '../src/lib/windCache.js'
 import { makeSeries, toArchiveJson } from './helpers/fakeWind.js'
+
+/** Concrete shape rather than `Record`, which `noUncheckedIndexedAccess` makes unusable. */
+interface ProvenanceResponse {
+  model_version: string
+  validated_at: string
+  results: {
+    id: string
+    provenance: string
+    validation: string
+    anchor?: { source: string; conditions: string; metric: string; result: string; limitations: string[] }
+  }[]
+  scene: {
+    terrain: { provenance: string }
+    layout: { provenance: string; status: string; statement: string }
+  }
+}
 
 /** Synthetic field with a maximum near 50.8 N, 0.2 W. */
 function windAt(latitude: number, longitude: number): number {
@@ -151,6 +168,41 @@ describe('API', () => {
       expect((await app.request('/api/field', { method: 'POST', body: 'x' })).status).toBe(400)
       expect((await app.request('/api/field', postJson({ ...body, layout: { ...body.layout, turbine: 'nope' } }))).status).toBe(404)
       expect((await app.request('/api/field', postJson({ ...body, terrain: { ...body.terrain, elevations_m: [0] } }))).status).toBe(400)
+    })
+
+    it('labels the volume as model output', async () => {
+      // The body is binary, so provenance has to travel in headers. A client that renders
+      // this without labelling it presents a computation as an observation.
+      const res = await app.request('/api/field', postJson(body))
+      expect(res.headers.get('x-kestrel-provenance')).toBe('computed')
+      expect(res.headers.get('x-kestrel-model-version')).toBe(PHYSICS_MODEL_VERSION)
+      expect(res.headers.get('x-kestrel-validation')).toContain('terrain-base-flow=externally-anchored')
+      expect(res.headers.get('x-kestrel-validation')).toContain('wake-deficit=externally-anchored')
+    })
+  })
+
+  describe('GET /api/provenance', () => {
+    it('records where every result comes from and what has been checked', async () => {
+      const res = await app.request('/api/provenance')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as ProvenanceResponse
+      expect(body.model_version).toBe(PHYSICS_MODEL_VERSION)
+      expect(body.results.length).toBeGreaterThan(0)
+
+      for (const result of body.results) {
+        expect(['measured', 'derived', 'computed']).toContain(result.provenance)
+        expect(['externally-anchored', 'internally-tested', 'unvalidated']).toContain(result.validation)
+      }
+
+      const wake = body.results.find((result) => result.id === 'wake-deficit')
+      expect(wake?.anchor?.source).toContain('10.1002/we.1625')
+      expect(wake?.anchor?.limitations.length).toBeGreaterThan(0)
+    })
+
+    it('separates the measured terrain from the invented turbines on it', async () => {
+      const body = (await (await app.request('/api/provenance')).json()) as ProvenanceResponse
+      expect(body.scene.terrain.provenance).toBe('measured')
+      expect(body.scene.layout.status).toBe('synthetic-demonstration')
     })
   })
 

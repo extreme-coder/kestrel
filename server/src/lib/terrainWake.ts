@@ -122,6 +122,22 @@ function sampleOrNull(field: BaseFlowField, point: FlowPoint): FlowVector | null
   return { east: component(field.eastMs), north: component(field.northMs), up: component(field.upMs) }
 }
 
+/**
+ * The solver's own ground elevation under a horizontal position.
+ *
+ * Consumers that want a height *above ground* need this, and they must not substitute the
+ * DEM's node elevations: the solve runs on cell centres, so its summit sits a few metres
+ * below the DEM's peak node. Mixing the two silently shifts the sampled height, which is
+ * exactly the error that makes a hilltop speed-up comparison meaningless.
+ */
+export function sampleGroundElevation(field: BaseFlowField, eastingM: number, northingM: number): number {
+  finite(eastingM, 'eastingM')
+  finite(northingM, 'northingM')
+  const ground = groundElevation(field, eastingM, northingM)
+  if (ground === null) throw new RangeError('point lies outside the cell-centred base-flow domain')
+  return ground
+}
+
 /** Trilinearly sample a cell-centred terrain-following base-flow field. */
 export function sampleBaseFlow(field: BaseFlowField, point: FlowPoint): FlowVector {
   finite(point.eastingM, 'eastingM')

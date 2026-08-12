@@ -9,6 +9,7 @@ import type { ProgressBus, ProgressEvent } from './lib/events.js'
 import { FieldService } from './lib/field.js'
 import { WindSourceError } from './lib/openmeteo.js'
 import { predict } from './lib/prediction.js'
+import { PHYSICS_MODEL_VERSION, getResultClaim, serialiseProvenance } from './lib/provenance.js'
 import { TURBINE_MODELS, getTurbineModel, sweptAreaM2 } from './lib/turbines.js'
 import type { WindCache } from './lib/windCache.js'
 import {
@@ -115,6 +116,14 @@ export function createApp(deps: AppDeps): Hono {
     }),
   )
 
+  /**
+   * Where the numbers come from and what has been checked against a measurement.
+   *
+   * Separate from the results themselves because it is static per deploy, so the client can
+   * fetch it once and cache it, and because `/api/field` returns binary and cannot carry it.
+   */
+  app.get('/api/provenance', (c) => c.json(serialiseProvenance()))
+
   app.post('/api/field', async (c) => {
     let body: unknown
     try {
@@ -134,11 +143,19 @@ export function createApp(deps: AppDeps): Hono {
       )
     }
     const result = fields.build(parsed.data, model)
+    // The body is a velocity volume, so provenance travels in headers. A client that renders
+    // this field without labelling it is presenting model output as observation; the two
+    // claims below name what the volume actually is. Full record at GET /api/provenance.
+    const baseFlow = getResultClaim('terrain-base-flow')
+    const wake = getResultClaim('wake-deficit')
     return new Response(result.payload, {
       headers: {
         'content-type': 'application/vnd.kestrel.field',
         'cache-control': 'public, max-age=31536000, immutable',
         'x-kestrel-cache': result.cacheHit ? 'hit' : 'miss',
+        'x-kestrel-model-version': PHYSICS_MODEL_VERSION,
+        'x-kestrel-provenance': 'computed',
+        'x-kestrel-validation': `terrain-base-flow=${baseFlow?.validation};wake-deficit=${wake?.validation}`,
       },
     })
   })
@@ -206,6 +223,14 @@ export function createApp(deps: AppDeps): Hono {
       energy_kwh_per_year: prediction.energyKwhPerYear,
       homes_powered: prediction.homesPowered,
       monthly: query.mean === 'month' ? prediction.monthly : undefined,
+      // Model output over reanalysis input, not an observation at this coordinate. The
+      // client must not present these as measured; GET /api/provenance carries the detail.
+      provenance: {
+        model_version: PHYSICS_MODEL_VERSION,
+        result: 'computed',
+        inputs: { wind: 'derived', turbine_power: 'computed' },
+        validation: getResultClaim('capacity-factor')?.validation,
+      },
     })
   })
 
