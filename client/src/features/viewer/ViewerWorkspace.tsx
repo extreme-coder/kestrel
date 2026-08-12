@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -8,10 +9,18 @@ import {
 import { ChevronDown, Compass, FlaskConical, Gauge, Info, Layers3, Move3d, Pause, RotateCcw, Settings2, Wind, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { PrimaryTaskCard, hasSeenPrimaryTask } from "@/features/analysis/PrimaryTaskCard";
+import { TurbineDetail } from "@/features/analysis/TurbineDetail";
+import { TurbineRanking } from "@/features/analysis/TurbineRanking";
+import { findTurbine } from "@/features/analysis/analysis";
+import { kilowatts, percent, speed } from "@/features/analysis/format";
+import { useAnalysis } from "@/features/analysis/useAnalysis";
+import type { AnalysisState } from "@/features/analysis/useAnalysis";
 import { ModelDisclosure } from "@/features/provenance/ModelDisclosure";
 import { ProvenanceTag } from "@/features/provenance/ProvenanceTag";
 import { useProvenance } from "@/features/provenance/useProvenance";
 import type { ProvenanceState } from "@/features/provenance/useProvenance";
+import { ASKERVEIN_FIELD_REQUEST } from "@/features/site/askervein";
 import { SpatialFieldViewport } from "@/features/spatial-field/SpatialFieldViewport";
 
 const SPEED_STOPS = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"];
@@ -34,12 +43,48 @@ function bearingLabel(bearing: number) {
   return labels[Math.round(bearing / 45) % labels.length];
 }
 
-function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotionChange }: {
+/**
+ * The analysis region: the ranked list, or one turbine's attribution.
+ *
+ * Two states of one panel rather than two panels, following the flow in
+ * `docs/design/wireframes.md` — the list answers T1, selecting a row moves to the
+ * attribution that answers T2, and "All turbines" comes back.
+ */
+function AnalysisResults({ analysis, selectedId, onSelect, onClear }: {
+  analysis: AnalysisState;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onClear: () => void;
+}) {
+  if (analysis.status === "loading") {
+    return <p className="text-xs text-muted-foreground" role="status">Computing turbine losses…</p>;
+  }
+  if (analysis.status === "error") {
+    // Visible, like the provenance failure. Leaving the last bearing's figures on screen
+    // beside a newly drawn field would be worse than showing none.
+    return (
+      <p className="text-xs leading-relaxed text-amber-200/80" role="alert">
+        {analysis.error}. Turbine figures are unavailable for this bearing. Start the Kestrel server and retry.
+      </p>
+    );
+  }
+  const selected = findTurbine(analysis.record, selectedId);
+  return selected
+    ? <TurbineDetail record={analysis.record} turbine={selected} onSelect={onSelect} onClear={onClear} />
+    : <TurbineRanking record={analysis.record} selectedId={selectedId} onSelect={onSelect} />;
+}
+
+function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotionChange, analysis, selectedId, onSelect, onClear }: {
   bearing: number;
   onBearingChange: (bearing: number) => void;
   reducedMotion: boolean;
   onReducedMotionChange: (reduced: boolean) => void;
+  analysis: AnalysisState;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onClear: () => void;
 }) {
+  const record = analysis.status === "ready" ? analysis.record : null;
   return (
     <aside className="analysis-panel" aria-label="Wind field controls">
       <div>
@@ -55,11 +100,24 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
         <div className="mt-4 flex items-end justify-between gap-4"><output className="font-display text-5xl leading-none tracking-[-0.05em]" htmlFor="wind-bearing">{bearing}°</output><p className="pb-1 text-xs text-muted-foreground">{bearingLabel(bearing)}</p></div>
         <input id="wind-bearing" className="range-control mt-6" aria-label="Wind bearing" type="range" min="0" max="359" value={bearing} onChange={(event) => onBearingChange(Number(event.currentTarget.value))} style={{ "--range-progress": `${bearing / 3.59}%` } as React.CSSProperties} />
         <div className="mt-2 flex justify-between text-[9px] font-semibold tracking-widest text-muted-foreground"><span>0° N</span><span>180° S</span><span>359° N</span></div>
+        {/* The array stays where it was built while the wind turns. Without saying so, a user
+            watching the losses change has no way to know the farm did not move. */}
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          The layout stays fixed at {record ? record.layout.orientation_bearing_deg : 210}°, the bearing it was
+          designed against. Only the wind turns.
+        </p>
       </div>
+      <Separator />
+      <AnalysisResults analysis={analysis} selectedId={selectedId} onSelect={onSelect} onClear={onClear} />
       <Separator />
       <div>
         <p className="eyebrow">Field conditions</p>
-        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5"><Metric label="Mean speed" value="10.0" unit="m/s" /><Metric label="Turbulence" value="8.0" unit="%" /><Metric label="Particles" value="64k" unit="live" /><Metric label="Turbines" value="4" unit="V112" /></dl>
+        <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-5">
+          <Metric label="Wind speed" value={record ? record.wind.speed_ms.toFixed(1) : "—"} unit="m/s" />
+          <Metric label="Turbulence" value={record ? (record.wind.turbulence_intensity * 100).toFixed(0) : "—"} unit="%" />
+          <Metric label="Turbines" value={record ? String(record.layout.count) : "—"} unit="V112" />
+          <Metric label="Particles" value="64k" unit="live" />
+        </dl>
         <p className="mt-4 text-xs leading-relaxed text-muted-foreground">Speed and turbulence are inputs to the model, not readings taken at Askervein.</p>
       </div>
       <Separator />
@@ -76,6 +134,15 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
 type ViewState = { yaw: number; pitch: number; zoom: number };
 
 const INITIAL_VIEW: ViewState = { yaw: 0, pitch: 0, zoom: 1 };
+
+/**
+ * Pointer travel, in pixels, before a press becomes a camera drag.
+ *
+ * Without it every click on a turbine also captured the pointer on the viewport, which
+ * stopped the canvas ever seeing the pointerup — so the scene could be orbited but nothing
+ * in it could be selected.
+ */
+const DRAG_THRESHOLD_PX = 4;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -94,6 +161,10 @@ function SiteInfo({ onClose, onOpenAccuracy }: { onClose: () => void; onOpenAccu
       <p className="mt-1.5 text-sm leading-relaxed text-white/70">Copernicus DEM GLO&#8209;30, a 2 km square at 62.5 m spacing. The same elevations drive the picture and the calculation.</p>
       <h3 className="mt-4 text-sm font-semibold">What the campaign checks</h3>
       <p className="mt-1.5 text-sm leading-relaxed text-white/70">Hilltop speed-up matches the measured value at 34 m above ground. Closer to the ground the model reads up to a third low, and it does not reproduce the slowdown in the hill&rsquo;s lee.</p>
+      <h3 className="mt-4 text-sm font-semibold">What it does not check</h3>
+      {/* The composition the viewer draws is the one thing nothing anchors. Saying it here
+          rather than only in the disclosure keeps it beside the picture it qualifies. */}
+      <p className="mt-1.5 text-sm leading-relaxed text-white/70">Wakes over terrain. Askervein has no turbines and the offshore array the wake model was checked against has no hill, so the combination on screen has never been compared with a measurement.</p>
       <Button variant="outline" className="mt-4 w-full" onClick={onOpenAccuracy}><FlaskConical aria-hidden="true" className="size-3.5" /> View accuracy and limits</Button>
     </section>
   );
@@ -106,25 +177,39 @@ function ComfortPanel({ reducedMotion, onReducedMotionChange, onClose }: { reduc
   </section>;
 }
 
-function TurbineInfo({ onClose }: { onClose: () => void }) {
+function TurbineInfo({ analysis, onClose }: { analysis: AnalysisState; onClose: () => void }) {
+  const record = analysis.status === "ready" ? analysis.record : null;
   return (
     <section className="turbine-info" aria-label="Turbine information">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="eyebrow text-lime-300">Demonstration layout</p>
-          <h2 className="mt-2 font-display text-xl">Four V112 turbines</h2>
+          <h2 className="mt-2 font-display text-xl">{record ? `${record.layout.count} ${record.layout.turbine_name} turbines` : "Four V112 turbines"}</h2>
         </div>
         <Button size="icon" variant="ghost" className="-mr-2 -mt-2 size-8" onClick={onClose} aria-label="Close turbine information"><X className="size-4" /></Button>
       </div>
       {/* The terrain is real and the turbines are not. Rendered together they read as a
           wind farm, so the panel that names them has to say otherwise. */}
-      <p className="mt-3 text-sm leading-relaxed text-white/70">No wind farm exists at Askervein. These four turbines are placed for demonstration, and their figures describe that invented layout <ProvenanceTag provenance="computed" /> rather than the site.</p>
-      <dl className="mt-4 grid grid-cols-2 gap-4"><Metric label="Rotor" value="112" unit="m" /><Metric label="Hub" value="100" unit="m" /><Metric label="Rows" value="2" unit="" /><Metric label="Columns" value="2" unit="" /></dl>
+      <p className="mt-3 text-sm leading-relaxed text-white/70">No wind farm exists at Askervein. These turbines are placed for demonstration, and their figures describe that invented layout <ProvenanceTag provenance="computed" /> rather than the site.</p>
+      <dl className="mt-4 grid grid-cols-2 gap-4">
+        <Metric label="Rotor" value={record ? String(Math.round(record.layout.rotor_diameter_m)) : "112"} unit="m" />
+        <Metric label="Hub" value="100" unit="m" />
+        <Metric label="Farm loss" value={record ? percent(record.farm.farm_wake_loss_fraction, 0) : "—"} unit="" />
+        <Metric label="Net" value={record ? kilowatts(record.farm.total_net_power_kw).replace(" kW", "") : "—"} unit="kW" />
+      </dl>
     </section>
   );
 }
 
-function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenance }: { bearing: number; reducedMotion: boolean; onReducedMotionChange: (reduced: boolean) => void; provenance: ProvenanceState }) {
+function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, onReducedMotionChange, provenance }: {
+  request: unknown;
+  analysis: AnalysisState;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  reducedMotion: boolean;
+  onReducedMotionChange: (reduced: boolean) => void;
+  provenance: ProvenanceState;
+}) {
   const [view, setView] = useState(INITIAL_VIEW);
   const [isDragging, setIsDragging] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -132,8 +217,9 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
   const [turbinesOpen, setTurbinesOpen] = useState(false);
   const [accuracyOpen, setAccuracyOpen] = useState(false);
   const [performanceOpen, setPerformanceOpen] = useState(true);
+  const [taskOpen, setTaskOpen] = useState(() => !hasSeenPrimaryTask());
   const viewport = useRef<HTMLElement>(null);
-  const dragOrigin = useRef({ x: 0, y: 0 });
+  const drag = useRef<{ x: number; y: number; active: boolean; pointerId: number } | null>(null);
 
   const updateView = (changes: Partial<ViewState>) => {
     setView((current) => ({ ...current, ...changes }));
@@ -141,21 +227,34 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
 
   const handlePointerDown = (event: PointerEvent<HTMLElement>) => {
     if ((event.target as HTMLElement).closest("button, input, label, a")) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragOrigin.current = { x: event.clientX, y: event.clientY };
-    setIsDragging(true);
+    drag.current = { x: event.clientX, y: event.clientY, active: false, pointerId: event.pointerId };
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLElement>) => {
-    if (!isDragging) return;
-    const dx = event.clientX - dragOrigin.current.x;
-    const dy = event.clientY - dragOrigin.current.y;
-    dragOrigin.current = { x: event.clientX, y: event.clientY };
+    const state = drag.current;
+    if (!state) return;
+    const dx = event.clientX - state.x;
+    const dy = event.clientY - state.y;
+    if (!state.active) {
+      if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+      // Capture only now: doing it on pointerdown steals the pointerup from the canvas, and
+      // with it every click on a turbine.
+      event.currentTarget.setPointerCapture(state.pointerId);
+      state.active = true;
+      setIsDragging(true);
+    }
+    state.x = event.clientX;
+    state.y = event.clientY;
     setView((current) => ({
       ...current,
       yaw: current.yaw + dx * 0.08,
       pitch: clamp(current.pitch - dy * 0.05, -5, 5),
     }));
+  };
+
+  const endDrag = () => {
+    drag.current = null;
+    setIsDragging(false);
   };
 
   useEffect(() => {
@@ -173,6 +272,11 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
   }, []);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape" && selectedId) {
+      event.preventDefault();
+      onSelect(null);
+      return;
+    }
     const changes: Partial<ViewState> = {};
     if (event.key === "ArrowLeft") changes.yaw = view.yaw - 2;
     else if (event.key === "ArrowRight") changes.yaw = view.yaw + 2;
@@ -185,21 +289,24 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
     updateView(changes);
   };
 
+  const record = analysis.status === "ready" ? analysis.record : null;
+  const selected = record ? findTurbine(record, selectedId) : null;
+
   return (
     <section
       ref={viewport}
       className={isDragging ? "scene-preview is-dragging" : "scene-preview"}
       aria-label="Three-dimensional wind field viewport"
-      aria-description="Use arrow keys to rotate. Use plus and minus to zoom."
+      aria-description="Use arrow keys to rotate. Use plus and minus to zoom. Select a turbine to see what the model says is waking it."
       tabIndex={0}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
-      onPointerUp={() => setIsDragging(false)}
-      onPointerCancel={() => setIsDragging(false)}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
       onKeyDown={handleKeyDown}
     >
       <div className="scene-world" data-testid="scene-world">
-        <SpatialFieldViewport view={view} bearingDeg={bearing} reducedMotion={reducedMotion} />
+        <SpatialFieldViewport request={request} analysis={analysis} selectedId={selectedId} onSelect={onSelect} reducedMotion={reducedMotion} view={view} />
       </div>
       <div className="absolute left-5 top-5 flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] backdrop-blur-md"><span className="size-1.5 rounded-full bg-lime-300 shadow-[0_0_12px_#bef264]" /> Desktop preview</div>
       <div className="absolute right-5 top-5 flex gap-2">
@@ -207,13 +314,19 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
         <Button size="icon" variant="outline" onClick={() => setView(INITIAL_VIEW)} aria-label="Reset view"><RotateCcw className="size-4" /></Button>
         <Button size="icon" variant="outline" onClick={() => setTurbinesOpen((open) => !open)} aria-label="Show turbine information" aria-expanded={turbinesOpen}><Layers3 className="size-4" /></Button><Button size="icon" variant="outline" onClick={() => setAccuracyOpen((open) => !open)} aria-label="Show model accuracy and limits" aria-expanded={accuracyOpen}><FlaskConical className="size-4" /></Button><Button size="icon" variant="outline" onClick={() => setSettingsOpen((open) => !open)} aria-label="Open viewer settings" aria-expanded={settingsOpen}><Settings2 className="size-4" /></Button>
       </div>
+      {taskOpen ? <PrimaryTaskCard turbineCount={record?.layout.count ?? 4} bearingDeg={record?.wind.bearing_deg ?? 210} onDismiss={() => setTaskOpen(false)} /> : null}
       {infoOpen ? <SiteInfo onClose={() => setInfoOpen(false)} onOpenAccuracy={() => { setInfoOpen(false); setAccuracyOpen(true); }} /> : null}
       {settingsOpen ? <ComfortPanel reducedMotion={reducedMotion} onReducedMotionChange={onReducedMotionChange} onClose={() => setSettingsOpen(false)} /> : null}
-      {turbinesOpen ? <TurbineInfo onClose={() => setTurbinesOpen(false)} /> : null}
+      {turbinesOpen ? <TurbineInfo analysis={analysis} onClose={() => setTurbinesOpen(false)} /> : null}
       {accuracyOpen ? <ModelDisclosure state={provenance} onClose={() => setAccuracyOpen(false)} /> : null}
       {performanceOpen ? <div className="absolute bottom-24 right-5 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-[10px] uppercase tracking-[0.12em] text-white/60 backdrop-blur-md" role="status">60 FPS target · 16.7 ms budget</div> : null}
       <div className="absolute bottom-5 left-5 right-5 flex items-end justify-between gap-4">
-        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md"><div className="flex items-center gap-2"><p className="eyebrow text-lime-300">Live field</p><ProvenanceTag provenance="computed" /></div><p className="mt-2 text-sm leading-relaxed text-white/70">Particles follow a modelled velocity field, not recorded wind. Hilltop speed-up matches the Askervein measurements at 34 m; nearer the ground it reads low.</p></div>
+        <div className="max-w-sm rounded-2xl border border-white/10 bg-black/30 p-4 backdrop-blur-md">
+          <div className="flex items-center gap-2"><p className="eyebrow text-lime-300">{selected ? "Selected" : "Live field"}</p><ProvenanceTag provenance="computed" /></div>
+          {selected
+            ? <p className="mt-2 text-sm leading-relaxed text-white/70">{selected.id} · {speed(selected.incoming_speed_ms)} at the rotor · {percent(selected.wake_loss_fraction)} of its output lost to modelled wakes. Press Escape to clear.</p>
+            : <p className="mt-2 text-sm leading-relaxed text-white/70">Particles follow a modelled velocity field, not recorded wind. Select a turbine in the scene or the list to see what the model says is waking it.</p>}
+        </div>
         <button type="button" onClick={() => setPerformanceOpen((open) => !open)} aria-expanded={performanceOpen} className="hidden rounded-full border border-white/10 bg-black/30 px-4 py-2 text-[10px] text-white/60 backdrop-blur-md sm:block">{performanceOpen ? "Hide performance" : "Show performance"}</button>
       </div>
     </section>
@@ -223,7 +336,16 @@ function ScenePreview({ bearing, reducedMotion, onReducedMotionChange, provenanc
 export function ViewerWorkspace() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [bearing, setBearing] = useState(210);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
+  // One request object describes one scene. The volume and the per-turbine figures are read
+  // off it by two endpoints, which is what keeps the picture and the table talking about the
+  // same farm.
+  const request = useMemo(() => ({
+    ...ASKERVEIN_FIELD_REQUEST,
+    wind: { ...ASKERVEIN_FIELD_REQUEST.wind, bearing_deg: bearing },
+  }), [bearing]);
+  const analysis = useAnalysis(request);
   // Fetched once at the workspace root rather than inside the panel, so the model version
   // is available to anything that displays a number without each consumer refetching.
   const provenance = useProvenance();
@@ -231,8 +353,19 @@ export function ViewerWorkspace() {
     <main className="min-h-screen bg-background text-foreground">
       <header className="flex h-[76px] items-center justify-between border-b border-border px-5 lg:px-8"><Brand /><nav className="flex items-center gap-1" aria-label="Primary navigation"><Button variant="outline" aria-label="Enter immersive view"><Move3d className="size-4" /><span className="hidden sm:inline">Enter immersive view</span></Button></nav></header>
       <div className="workspace-grid">
-        <div className={panelOpen ? "mobile-panel is-open" : "mobile-panel"}><AnalysisPanel bearing={bearing} onBearingChange={setBearing} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} /></div>
-        <ScenePreview bearing={bearing} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} provenance={provenance} />
+        <div className={panelOpen ? "mobile-panel is-open" : "mobile-panel"}>
+          <AnalysisPanel
+            bearing={bearing}
+            onBearingChange={setBearing}
+            reducedMotion={reducedMotion}
+            onReducedMotionChange={setReducedMotion}
+            analysis={analysis}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onClear={() => setSelectedId(null)}
+          />
+        </div>
+        <ScenePreview request={request} analysis={analysis} selectedId={selectedId} onSelect={setSelectedId} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} provenance={provenance} />
         <aside className="status-rail" aria-label="Performance status"><div className="flex items-center gap-2"><Gauge className="size-3.5 text-lime-300" /><span>Target 60 FPS</span></div><span className="text-muted-foreground">Desktop budget 16.7 ms</span><span className="text-muted-foreground">{provenance.status === "ready" ? `Model ${provenance.record.model_version}` : "Model version unavailable"}</span><span className="ml-auto text-muted-foreground">WebGL 2</span></aside>
       </div>
       <Button className="fixed bottom-5 left-5 z-50 lg:hidden" onClick={() => setPanelOpen((open) => !open)} aria-expanded={panelOpen}><Settings2 className="size-4" /> {panelOpen ? "Close controls" : "Field controls"}</Button>

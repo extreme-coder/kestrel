@@ -1,11 +1,24 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ViewerWorkspace } from "./ViewerWorkspace";
+import { ANALYSIS_FIXTURE } from "@/features/analysis/analysis.fixture";
 import type { ProvenanceRecord } from "@/features/provenance/provenance";
 
 vi.mock("@/features/spatial-field/SpatialFieldViewport", () => ({
-  SpatialFieldViewport: ({ view, bearingDeg, reducedMotion }: { view: { yaw: number; pitch: number; zoom: number }; bearingDeg: number; reducedMotion: boolean }) => (
-    <div data-testid="spatial-field" data-yaw={view.yaw} data-pitch={view.pitch} data-zoom={view.zoom} data-bearing={bearingDeg} data-reduced-motion={reducedMotion} />
+  SpatialFieldViewport: ({ view, request, reducedMotion, selectedId, onSelect }: { view: { yaw: number; pitch: number; zoom: number }; request: { wind: { bearing_deg: number } }; reducedMotion: boolean; selectedId: string | null; onSelect: (id: string) => void }) => (
+    <div
+      data-testid="spatial-field"
+      data-yaw={view.yaw}
+      data-pitch={view.pitch}
+      data-zoom={view.zoom}
+      data-bearing={request.wind.bearing_deg}
+      data-reduced-motion={reducedMotion}
+      data-selected={selectedId ?? ""}
+    >
+      {/* Stands in for a turbine in the scene: selection is one piece of state, and the
+          scene is one of its two presentations. */}
+      <button type="button" onClick={() => onSelect("t-r2c2")}>scene turbine t-r2c2</button>
+    </div>
   ),
 }));
 
@@ -43,8 +56,20 @@ const PROVENANCE: ProvenanceRecord = {
   },
 };
 
+/** Route by endpoint: the workspace now loads a provenance record and an analysis. */
+function stubEndpoints(overrides: { analysis?: () => Response; provenance?: () => Response } = {}) {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.includes("/api/analysis")) {
+      return overrides.analysis?.() ?? new Response(JSON.stringify(ANALYSIS_FIXTURE), { status: 200 });
+    }
+    return overrides.provenance?.() ?? new Response(JSON.stringify(PROVENANCE), { status: 200 });
+  }));
+}
+
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(PROVENANCE), { status: 200 })));
+  window.localStorage.clear();
+  stubEndpoints();
 });
 
 afterEach(() => {
@@ -103,7 +128,7 @@ describe("ViewerWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Show turbine information" }));
     const panel = screen.getByRole("region", { name: "Turbine information" });
-    expect(panel).toHaveTextContent("Four V112 turbines");
+    expect(panel).toHaveTextContent("4 V112-3450 turbines");
     // Real terrain plus rendered turbines reads as a real wind farm. The panel has to deny it.
     expect(panel).toHaveTextContent(/no wind farm exists at askervein/i);
     expect(panel).toHaveTextContent(/demonstration layout/i);
@@ -153,6 +178,98 @@ describe("ViewerWorkspace", () => {
 
     expect(screen.getByRole("region", { name: "Model accuracy and limits" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "About this site" })).not.toBeInTheDocument();
+  });
+
+  it("states the task on first load and does not repeat it once acknowledged", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<ViewerWorkspace />);
+
+    const card = await screen.findByRole("dialog", { name: /find the turbine losing the most energy/i });
+    expect(card).toHaveTextContent(/4 turbines, wind from 210°/);
+    expect(card).toHaveTextContent(/change the bearing to check whether the answer holds/i);
+    await user.click(screen.getByRole("button", { name: "Skip" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    unmount();
+    render(<ViewerWorkspace />);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("ranks turbines by wake loss and says the losses are a floor", async () => {
+    render(<ViewerWorkspace />);
+    const ranking = await screen.findByRole("region", { name: "Wake loss by turbine" });
+
+    const rows = within(ranking).getAllByRole("button");
+    expect(rows[0]).toHaveTextContent("t-r2c1");
+    expect(rows[0]).toHaveTextContent("45.6%");
+    expect(rows[0]).toHaveTextContent("1,829 kW net");
+    expect(rows[3]).toHaveTextContent("t-r1c2");
+    expect(ranking).toHaveTextContent("25.4%");
+    // D24: the model recovers about 83% of Horns Rev's measured array loss.
+    expect(ranking).toHaveTextContent(/floor, not an upper limit/i);
+  });
+
+  it("attributes a selected turbine's loss to an upstream cause", async () => {
+    const user = userEvent.setup();
+    render(<ViewerWorkspace />);
+    const ranking = await screen.findByRole("region", { name: "Wake loss by turbine" });
+
+    await user.click(within(ranking).getAllByRole("button")[0]!);
+    const detail = screen.getByRole("region", { name: "Analysis for turbine t-r2c1" });
+
+    // Rounded to one decimal: the wake model misses Horns Rev's farm efficiency by 4.5
+    // points, so a second decimal would assert a resolution it has never been shown to have.
+    expect(detail).toHaveTextContent("8.8 m/s");
+    expect(detail).toHaveTextContent(/The model attributes 100% of t-r2c1's 1533 kW loss to t-r1c1/);
+    expect(within(detail).getByLabelText("Upstream contributors")).toHaveTextContent("8.0 D upwind");
+    // The section carries the height relation in words as well as in the drawing.
+    expect(detail).toHaveTextContent(/wake centreline sits at/i);
+    expect(detail).toHaveTextContent(/rotor spans/i);
+
+    await user.click(within(detail).getByRole("button", { name: /all turbines/i }));
+    expect(screen.getByRole("region", { name: "Wake loss by turbine" })).toBeInTheDocument();
+  });
+
+  it("shares one selection between the list and the scene", async () => {
+    const user = userEvent.setup();
+    render(<ViewerWorkspace />);
+    await screen.findByRole("region", { name: "Wake loss by turbine" });
+
+    await user.click(screen.getByRole("button", { name: /scene turbine t-r2c2/i }));
+    expect(screen.getByRole("region", { name: "Analysis for turbine t-r2c2" })).toBeInTheDocument();
+    expect(screen.getByTestId("spatial-field")).toHaveAttribute("data-selected", "t-r2c2");
+
+    const detail = screen.getByRole("region", { name: "Analysis for turbine t-r2c2" });
+    await user.click(within(detail).getByRole("button", { name: /t-r1c2/ }));
+    expect(screen.getByRole("region", { name: "Analysis for turbine t-r1c2" })).toBeInTheDocument();
+  });
+
+  it("labels every reported figure with where it came from", async () => {
+    const user = userEvent.setup();
+    render(<ViewerWorkspace />);
+    const ranking = await screen.findByRole("region", { name: "Wake loss by turbine" });
+    expect(within(ranking).getAllByTitle(/backed by: wake-deficit/i).length).toBeGreaterThan(0);
+
+    await user.click(within(ranking).getAllByRole("button")[0]!);
+    const detail = screen.getByRole("region", { name: "Analysis for turbine t-r2c1" });
+    expect(within(detail).getByTitle(/backed by: hub-wind-speed/i)).toBeInTheDocument();
+    expect(within(detail).getByTitle(/backed by: wake-attribution/i)).toBeInTheDocument();
+  });
+
+  it("says so when the turbine figures cannot be computed", async () => {
+    // Keeping the previous bearing's numbers on screen beside a newly drawn field would be
+    // worse than showing none.
+    stubEndpoints({ analysis: () => new Response("no", { status: 500 }) });
+    render(<ViewerWorkspace />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/Analysis request failed \(500\)/);
+    expect(alert).toHaveTextContent(/figures are unavailable for this bearing/i);
+  });
+
+  it("says the layout does not turn with the wind", async () => {
+    render(<ViewerWorkspace />);
+    await screen.findByRole("region", { name: "Wake loss by turbine" });
+    expect(screen.getByText(/layout stays fixed at 210°/i)).toBeInTheDocument();
   });
 
   it("rotates and zooms the scene with keyboard controls", () => {

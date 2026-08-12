@@ -36,6 +36,16 @@
   .status-rail { @apply col-start-2 flex items-center gap-6 px-5 text-[10px] font-semibold uppercase tracking-[0.13em]; }
   .range-control { width: 100%; height: 3px; appearance: none; border-radius: 999px; background: linear-gradient(90deg, #c9f36b 0 var(--range-progress, 58%), rgba(255,255,255,.14) var(--range-progress, 58%)); }
   .turbine-info { @apply absolute left-5 top-[76px] z-20 w-[min(320px,calc(100%-40px))] rounded-2xl border border-white/10 bg-[#0b1412]/95 p-5 shadow-2xl backdrop-blur-xl; cursor: default; }
+  /* A row is a control, not a label: selection is one piece of state and this list is one of
+     its two presentations, so it has to be operable without a pointer. */
+  .turbine-row { @apply flex w-full items-center gap-3 rounded-xl border border-transparent bg-white/4 px-3 py-2.5 text-left text-sm outline-none transition-colors hover:bg-white/8 focus-visible:ring-2 focus-visible:ring-lime-300; }
+  .turbine-row.is-selected { @apply border-lime-300/45 bg-lime-300/10; }
+  .turbine-row-rank { @apply grid size-6 shrink-0 place-items-center rounded-full bg-white/8 text-[11px] tabular-nums text-muted-foreground; }
+  .turbine-row.is-selected .turbine-row-rank { @apply bg-lime-300/25 text-lime-100; }
+  .contributor-row { @apply flex w-full flex-col gap-1.5 rounded-xl border border-transparent bg-white/4 px-3 py-2.5 text-left text-sm outline-none transition-colors hover:bg-white/8 focus-visible:ring-2 focus-visible:ring-lime-300; }
+  .contributor-bar { display: block; height: 3px; border-radius: 999px; background: linear-gradient(90deg, #c9f36b 0 var(--share, 0%), rgba(255,255,255,.1) var(--share, 0%)); }
+  .section-inset { @apply mt-3 rounded-xl border border-white/10 bg-black/25 p-2.5; }
+  .primary-task { @apply absolute left-1/2 top-1/2 z-30 w-[min(420px,calc(100%-40px))] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-white/12 bg-[#0b1412]/97 p-6 shadow-2xl backdrop-blur-xl; cursor: default; }
   /* Taller and scrollable: the validation record is long by design, and truncating it would
      hide exactly the limitations it exists to state. */
   .model-disclosure { @apply absolute right-5 top-[76px] bottom-5 z-30 w-[min(420px,calc(100%-40px))] overflow-y-auto overscroll-contain rounded-2xl border border-white/10 bg-[#0b1412]/97 p-5 shadow-2xl backdrop-blur-xl; cursor: default; }

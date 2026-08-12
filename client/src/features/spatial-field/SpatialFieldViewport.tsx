@@ -1,8 +1,9 @@
 import { Canvas, useThree } from "@react-three/fiber";
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect } from "react";
 import { SpatialField } from "./SpatialField";
 import { useVelocityField } from "./useVelocityField";
-import { ASKERVEIN_FIELD_REQUEST } from "@/features/site/askervein";
+import type { AnalysisState } from "@/features/analysis/useAnalysis";
+import { emphasisPath, involvedTurbineIds } from "@/features/analysis/analysis";
 import { SiteScene } from "@/features/site/SiteScene";
 
 export type SpatialFieldView = { yaw: number; pitch: number; zoom: number };
@@ -25,22 +26,32 @@ function CameraRig({ view }: { view: SpatialFieldView }) {
   return null;
 }
 
+/**
+ * The scene: terrain, turbines, and the advected velocity volume.
+ *
+ * The field request is passed in rather than built here because the same request produces
+ * the numbers in the panel. One request object per scene is what stops the picture and the
+ * table from describing different farms.
+ */
 export function SpatialFieldViewport({
-  bearingDeg = ASKERVEIN_FIELD_REQUEST.wind.bearing_deg,
+  request,
+  analysis,
+  selectedId = null,
+  onSelect = () => {},
   reducedMotion = false,
   view,
 }: {
-  bearingDeg?: number;
+  request: unknown;
+  analysis: AnalysisState;
+  selectedId?: string | null;
+  onSelect?: (id: string) => void;
   reducedMotion?: boolean;
   view: SpatialFieldView;
 }) {
-  const request = useMemo(() => ({
-    ...ASKERVEIN_FIELD_REQUEST,
-    wind: { ...ASKERVEIN_FIELD_REQUEST.wind, bearing_deg: bearingDeg },
-  }), [bearingDeg]);
   const result = useVelocityField(request);
   if (result.status === "loading") return <div className="field-state" role="status">Computing velocity field…</div>;
   if (result.status === "error") return <div className="field-state field-error" role="alert">{result.error}. Start the Kestrel server and retry.</div>;
+  const record = analysis.status === "ready" ? analysis.record : null;
   return (
     <Canvas
       className="spatial-field-canvas"
@@ -51,7 +62,13 @@ export function SpatialFieldViewport({
     >
       <CameraRig view={view} />
       <color attach="background" args={["#08100f"]} />
-      <SiteScene />
+      <SiteScene
+        turbines={record?.turbines ?? []}
+        selectedId={selectedId}
+        involvedIds={record ? involvedTurbineIds(record, selectedId) : undefined}
+        emphasisPath={record ? emphasisPath(record, selectedId) : []}
+        onSelect={onSelect}
+      />
       <SpatialField field={result.field} reducedMotion={reducedMotion} />
     </Canvas>
   );
