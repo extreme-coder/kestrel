@@ -5,6 +5,7 @@ import { useVelocityField } from "./useVelocityField";
 import type { AnalysisState } from "@/features/analysis/useAnalysis";
 import { emphasisPath, involvedTurbineIds } from "@/features/analysis/analysis";
 import { SiteScene } from "@/features/site/SiteScene";
+import type { SceneTerrain } from "@/features/site/SiteScene";
 
 export type SpatialFieldView = { yaw: number; pitch: number; zoom: number };
 
@@ -40,6 +41,7 @@ export function SpatialFieldViewport({
   onSelect = () => {},
   reducedMotion = false,
   view,
+  terrain,
 }: {
   request: unknown;
   analysis: AnalysisState;
@@ -47,6 +49,7 @@ export function SpatialFieldViewport({
   onSelect?: (id: string) => void;
   reducedMotion?: boolean;
   view: SpatialFieldView;
+  terrain?: SceneTerrain;
 }) {
   const result = useVelocityField(request);
   if (result.status === "loading") return <div className="field-state" role="status">Computing velocity field…</div>;
@@ -68,6 +71,8 @@ export function SpatialFieldViewport({
         involvedIds={record ? involvedTurbineIds(record, selectedId) : undefined}
         emphasisPath={record ? emphasisPath(record, selectedId) : []}
         onSelect={onSelect}
+        {...(terrain ? { terrain } : {})}
+        {...(record ? { rotorDiameterM: record.layout.rotor_diameter_m } : {})}
       />
       <SpatialField field={result.field} reducedMotion={reducedMotion} />
     </Canvas>

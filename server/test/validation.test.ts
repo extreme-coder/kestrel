@@ -15,6 +15,7 @@ import {
 } from '../src/lib/validation/index.js'
 import {
   ANALYSIS_QUANTITY_CLAIMS,
+  QUANTITY_CLAIM_MAPS,
   RESULT_CLAIMS,
   WAKE_LOSS_FRAMING,
   collectedLimitations,
@@ -211,14 +212,37 @@ describe('provenance record', () => {
     }
   })
 
-  it('resolves every quantity the analysis reports to a real claim', () => {
-    // ADR 0004 / D25. The client picks a chip per rendered number out of this map, so a
-    // dangling id would silently render a figure with no provenance at all.
+  it('resolves every quantity any endpoint reports to a real claim', () => {
+    // ADR 0004 / D25. The client picks a chip per rendered number out of these maps, so a
+    // dangling id would silently render a figure with no provenance at all. Iterating the
+    // registry rather than naming each map means a new endpoint is covered the moment it
+    // registers one — the alternative is upkeep that gets forgotten exactly once.
     const ids = new Set(RESULT_CLAIMS.map((claim) => claim.id))
-    for (const [quantity, claims] of Object.entries(ANALYSIS_QUANTITY_CLAIMS)) {
-      expect(claims.length, quantity).toBeGreaterThan(0)
-      for (const id of claims) expect(ids.has(id), `${quantity} -> ${id}`).toBe(true)
+    for (const [endpoint, map] of Object.entries(QUANTITY_CLAIM_MAPS)) {
+      expect(Object.keys(map).length, endpoint).toBeGreaterThan(0)
+      for (const [quantity, claims] of Object.entries(map)) {
+        expect(claims.length, `${endpoint}.${quantity}`).toBeGreaterThan(0)
+        for (const id of claims) expect(ids.has(id), `${endpoint}.${quantity} -> ${id}`).toBe(true)
+      }
     }
+    expect(QUANTITY_CLAIM_MAPS.analysis).toBe(ANALYSIS_QUANTITY_CLAIMS)
+  })
+
+  it('refuses to call a weighted or differenced figure better anchored than its inputs', () => {
+    // Both are arithmetic over the same unanchored composition. A yearly average of unvalidated
+    // numbers is an unvalidated number, and so is a difference between two of them — the
+    // aggregation is the most tempting place to quietly acquire confidence.
+    for (const id of ['annual-wake-loss', 'scenario-delta']) {
+      const claim = RESULT_CLAIMS.find((entry) => entry.id === id)
+      expect(claim?.validation, id).toBe('unvalidated')
+      expect(claim?.provenance, id).toBe('computed')
+      expect(claim?.note, id).toBeTruthy()
+    }
+    // The rose is reanalysis rather than a mast, and says so.
+    const rose = RESULT_CLAIMS.find((entry) => entry.id === 'wind-rose')
+    expect(rose?.provenance).toBe('derived')
+    expect(rose?.validation).toBe('internally-tested')
+    expect(rose?.note).toMatch(/reanalysis|ERA5|25 km/i)
   })
 
   it('refuses to call the composition the viewer draws validated', () => {

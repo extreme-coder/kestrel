@@ -1,5 +1,15 @@
 import ReactThreeTestRenderer from "@react-three/test-renderer";
-import { BufferGeometry, Color, Material, type Group, type InstancedMesh, type Mesh } from "three";
+import {
+  BufferGeometry,
+  Color,
+  Material,
+  Matrix4,
+  Quaternion,
+  Vector3,
+  type Group,
+  type InstancedMesh,
+  type Mesh,
+} from "three";
 import type { TurbineAnalysis, WakePathPoint } from "@/features/analysis/analysis";
 import { SiteScene, sceneTurbines } from "./SiteScene";
 
@@ -51,11 +61,56 @@ describe("Askervein site scene", () => {
     // The scene reads positions out of the analysis response. Deriving them a second time
     // here is how a picture and a table come to describe different farms.
     expect(sceneTurbines(TURBINES)).toEqual([
-      { id: "t-r1c1", eastingM: 900, northingM: 1100, elevationM: 90 },
-      { id: "t-r1c2", eastingM: 1100, northingM: 1100, elevationM: 90 },
-      { id: "t-r2c1", eastingM: 900, northingM: 900, elevationM: 90 },
-      { id: "t-r2c2", eastingM: 1100, northingM: 900, elevationM: 90 },
+      { id: "t-r1c1", eastingM: 900, northingM: 1100, elevationM: 90, hubHeightM: 100 },
+      { id: "t-r1c2", eastingM: 1100, northingM: 1100, elevationM: 90, hubHeightM: 100 },
+      { id: "t-r2c1", eastingM: 900, northingM: 900, elevationM: 90, hubHeightM: 100 },
+      { id: "t-r2c2", eastingM: 1100, northingM: 900, elevationM: 90, hubHeightM: 100 },
     ]);
+  });
+
+  it("draws whatever terrain the scene supplies, at its own extent", async () => {
+    // Since step 11 the mesh comes from the field request the server solved rather than from
+    // an asset compiled into the client, so an imported scene renders its own hill. Before
+    // this, a scene with a different grid would have been drawn on Askervein's.
+    const renderer = await ReactThreeTestRenderer.create(
+      <SiteScene
+        turbines={[]}
+        terrain={{
+          columns: 5,
+          rows: 4,
+          cellSizeEastingM: 100,
+          cellSizeNorthingM: 200,
+          elevationsM: Array.from({ length: 20 }, (_, index) => index),
+        }}
+      />,
+    );
+    const terrain = (renderer.getInstance() as Group).getObjectByName("copernicus-terrain") as Mesh;
+    const positions = terrain.geometry.getAttribute("position");
+    expect(positions.count).toBe(20);
+    terrain.geometry.computeBoundingBox();
+    const box = terrain.geometry.boundingBox!;
+    expect(box.max.x - box.min.x).toBeCloseTo(400, 6);
+    expect(box.max.z - box.min.z).toBeCloseTo(600, 6);
+    await renderer.unmount();
+  });
+
+  it("scales each tower to its own hub height", async () => {
+    // Instancing shares one geometry. A tower cut to a fixed height would silently draw every
+    // machine in an imported scene at whatever the bundled one measured.
+    const short = { ...turbine("t-a", 900, 900), hub_height_m: 60 };
+    const tall = { ...turbine("t-b", 1100, 1100), hub_height_m: 140 };
+    const renderer = await ReactThreeTestRenderer.create(<SiteScene turbines={[short, tall]} />);
+    const towers = (renderer.getInstance() as Group).getObjectByName("instanced-turbines")!
+      .children[0] as InstancedMesh;
+    const matrix = new Matrix4();
+    const scale = new Vector3();
+    towers.getMatrixAt(0, matrix);
+    matrix.decompose(new Vector3(), new Quaternion(), scale);
+    expect(scale.y).toBeCloseTo(60, 6);
+    towers.getMatrixAt(1, matrix);
+    matrix.decompose(new Vector3(), new Quaternion(), scale);
+    expect(scale.y).toBeCloseTo(140, 6);
+    await renderer.unmount();
   });
 
   it("emphasises the selection and dims the uninvolved, without hiding anything", async () => {

@@ -9,6 +9,9 @@ export function makeSeries(options: {
   /** Constant 100 m wind speed, or a function of hour index. */
   windSpeed100m?: number | ((hour: number) => number)
   windSpeed10m?: number | ((hour: number) => number)
+  /** Meteorological bearing the wind blows from, constant or a function of hour index. */
+  windDirection100m?: number | ((hour: number) => number)
+  windDirection10m?: number | ((hour: number) => number)
   temperatureC?: number
   surfacePressurePa?: number
   relativeHumidity?: number
@@ -21,6 +24,8 @@ export function makeSeries(options: {
     hours = 24,
     windSpeed100m = 10,
     windSpeed10m,
+    windDirection100m = 270,
+    windDirection10m,
     temperatureC = 15,
     surfacePressurePa = 101325,
     relativeHumidity = 0,
@@ -38,10 +43,14 @@ export function makeSeries(options: {
     const w100 = at(windSpeed100m, h)
     // Default the 10 m field to a 1/7-power-law profile consistent with the 100 m value.
     const w10 = windSpeed10m === undefined ? w100 * Math.pow(10 / 100, 1 / 7) : at(windSpeed10m, h)
+    const d100 = at(windDirection100m, h)
+    const d10 = windDirection10m === undefined ? d100 : at(windDirection10m, h)
     samples.push({
       time: new Date(start + h * 3600_000).toISOString().slice(0, 16),
       windSpeed10mMs: w10,
       windSpeed100mMs: w100,
+      windDirection10mDeg: d10,
+      windDirection100mDeg: d100,
       temperatureC,
       surfacePressurePa,
       relativeHumidity,
@@ -61,6 +70,8 @@ export function toArchiveJson(series: WindSeries): unknown {
       time: series.samples.map((s) => s.time),
       wind_speed_10m: series.samples.map((s) => s.windSpeed10mMs),
       wind_speed_100m: series.samples.map((s) => s.windSpeed100mMs),
+      wind_direction_10m: series.samples.map((s) => s.windDirection10mDeg),
+      wind_direction_100m: series.samples.map((s) => s.windDirection100mDeg),
       temperature_2m: series.samples.map((s) => s.temperatureC),
       surface_pressure: series.samples.map((s) => s.surfacePressurePa / 100),
       relative_humidity_2m: series.samples.map((s) => s.relativeHumidity * 100),

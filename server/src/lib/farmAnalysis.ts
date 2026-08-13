@@ -37,6 +37,23 @@ import { powerCurveOutputKw, thrustCoefficient } from './power.js'
 import { DEFAULT_TURBULENCE_INTENSITY, windTravelVector } from './wake.js'
 import type { FarmTurbine } from './wake.js'
 
+/**
+ * Below this loss fraction, no cause is claimed for a turbine at all (D28).
+ *
+ * Half a percent of a rotor's output is inside every error this model has been measured to
+ * have, so naming a culprit for it attributes a number the model cannot resolve. Turbines
+ * standing side by side still register deficits of order 1e-6 against each other, and the raw
+ * contributor list will happily rank one of them as the dominant cause of a turbine losing
+ * 0.00%.
+ *
+ * Exported because the same threshold has to hold wherever a *causal claim* is made — the
+ * client's attribution sentence and the comparison's "the cause changed" flag — and three
+ * copies of a constant is two that can quietly stop matching.
+ * `client/src/features/analysis/analysis.ts` carries the browser-side copy;
+ * `test/farmAnalysis.test.ts` pins them equal.
+ */
+export const MATERIAL_LOSS_FRACTION = 0.005
+
 /** One upstream turbine's contribution to a rotor's deficit, with its share of the loss. */
 export interface WakeContributor {
   turbineId: string

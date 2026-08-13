@@ -19,6 +19,14 @@ export interface WindSample {
   time: string
   windSpeed10mMs: number
   windSpeed100mMs: number
+  /**
+   * Meteorological bearing the wind blows *from*, degrees clockwise from north.
+   *
+   * The same convention `WakeConditions.bearingDeg`, `generateGridLayout` and the field
+   * request all use, so a direction read from here can be handed to the physics unchanged.
+   */
+  windDirection10mDeg: number
+  windDirection100mDeg: number
   temperatureC: number
   surfacePressurePa: number
   /** Relative humidity in [0, 1]. */
@@ -48,10 +56,23 @@ export const OPEN_METEO_ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/arc
 const HOURLY_FIELDS = [
   'wind_speed_10m',
   'wind_speed_100m',
+  'wind_direction_10m',
+  'wind_direction_100m',
   'temperature_2m',
   'surface_pressure',
   'relative_humidity_2m',
 ] as const
+
+/**
+ * Shape version of a stored `WindSeries`, part of every cache key.
+ *
+ * Bumped to 2 when directions were added. The persistent cache keeps a series for 30 days,
+ * so without this a warm cache would keep answering with direction-less rows and a wind rose
+ * built from them would be silently empty rather than wrong-looking. A shape change has to
+ * invalidate the rows written under the old shape, exactly as a physics change invalidates a
+ * cached volume.
+ */
+export const SERIES_SCHEMA_VERSION = 2
 
 export class WindSourceError extends Error {
   constructor(
@@ -87,10 +108,23 @@ interface ArchiveResponse {
     time?: string[]
     wind_speed_10m?: (number | null)[]
     wind_speed_100m?: (number | null)[]
+    wind_direction_10m?: (number | null)[]
+    wind_direction_100m?: (number | null)[]
     temperature_2m?: (number | null)[]
     surface_pressure?: (number | null)[]
     relative_humidity_2m?: (number | null)[]
   }
+}
+
+/**
+ * Fold a bearing into [0, 360).
+ *
+ * ERA5 reports 0–360 inclusive, so a due-north hour arrives as either 0 or 360 depending on
+ * rounding. Left alone, the two land in different sectors of a wind rose and split the
+ * northerly bin in half.
+ */
+export function normaliseBearing(degrees: number): number {
+  return ((degrees % 360) + 360) % 360
 }
 
 /** Parse an archive response body into a WindSeries, dropping hours with gaps. */
@@ -112,6 +146,8 @@ export function parseArchiveResponse(body: unknown): WindSeries {
     const time = times[i]
     const w10 = hourly.wind_speed_10m?.[i]
     const w100 = hourly.wind_speed_100m?.[i]
+    const d10 = hourly.wind_direction_10m?.[i]
+    const d100 = hourly.wind_direction_100m?.[i]
     const temp = hourly.temperature_2m?.[i]
     const pressureHpa = hourly.surface_pressure?.[i]
     const humidityPct = hourly.relative_humidity_2m?.[i]
@@ -119,10 +155,18 @@ export function parseArchiveResponse(body: unknown): WindSeries {
     // ERA5 has occasional nulls. Skip the hour rather than imputing — a wind farm's
     // output is dominated by the tail of the distribution, and invented values there
     // would quietly bias the annual mean.
+    //
+    // Direction is required on the same terms as speed rather than defaulted, because the
+    // two are one measurement in polar form: ERA5 stores u and v, and Open-Meteo derives
+    // both from that single pair. An hour with a speed and no direction should not exist,
+    // and if one does, a substituted bearing would land in the wind rose as a real hour of
+    // wind from a direction nothing recorded.
     if (
       typeof time !== 'string' ||
       typeof w10 !== 'number' ||
       typeof w100 !== 'number' ||
+      typeof d10 !== 'number' ||
+      typeof d100 !== 'number' ||
       typeof temp !== 'number' ||
       typeof pressureHpa !== 'number'
     ) {
@@ -133,6 +177,8 @@ export function parseArchiveResponse(body: unknown): WindSeries {
       time,
       windSpeed10mMs: w10,
       windSpeed100mMs: w100,
+      windDirection10mDeg: normaliseBearing(d10),
+      windDirection100mDeg: normaliseBearing(d100),
       temperatureC: temp,
       surfacePressurePa: pressureHpa * 100,
       relativeHumidity: typeof humidityPct === 'number' ? humidityPct / 100 : 0.8,

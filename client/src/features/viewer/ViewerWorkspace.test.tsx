@@ -56,15 +56,113 @@ const PROVENANCE: ProvenanceRecord = {
   },
 };
 
-/** Route by endpoint: the workspace now loads a provenance record and an analysis. */
-function stubEndpoints(overrides: { analysis?: () => Response; provenance?: () => Response } = {}) {
+/**
+ * The scene the workspace loads on mount.
+ *
+ * Small on purpose — a 3 x 3 grid rather than Askervein's 33 x 33 — because these tests are
+ * about the workspace wiring, not the DEM. The shape is what matters: since step 11 the
+ * viewer has no compiled-in farm, and everything it draws comes from here.
+ */
+const SCENE = {
+  kestrel_scene: 1,
+  id: "askervein-demonstration",
+  name: "Askervein Hill — demonstration array",
+  terrain: { site_id: "askervein-copernicus-glo30" },
+  layout: { turbine: "vestas-v112-3450", rows: 2, columns: 2, orientation_bearing_deg: 210 },
+  wind: { bearing_deg: 210, speed_ms: 10, turbulence_intensity: 0.08 },
+  volume: { levels: 8, top_elevation_m: 500 },
+};
+
+const FIELD_REQUEST = {
+  terrain: {
+    site_id: "askervein-copernicus-glo30",
+    columns: 3,
+    rows: 3,
+    cell_size_easting_m: 500,
+    cell_size_northing_m: 500,
+    elevations_m: [0, 10, 0, 10, 60, 10, 0, 10, 0],
+  },
+  layout: { turbine: "vestas-v112-3450", rows: 2, columns: 2, orientation_bearing_deg: 210 },
+  wind: { bearing_deg: 210, speed_ms: 10, turbulence_intensity: 0.08 },
+  volume: { levels: 8, top_elevation_m: 500 },
+};
+
+const CATALOGUE = {
+  scene_format_version: 1,
+  scenes: [
+    {
+      id: "askervein-demonstration",
+      name: "Askervein Hill — demonstration array",
+      description: "Four V112 turbines.",
+      site_id: "askervein-copernicus-glo30",
+      turbine: "vestas-v112-3450",
+      turbine_count: 4,
+      bearing_deg: 210,
+      has_wind_rose: true,
+    },
+  ],
+  sites: [],
+};
+
+const ANNUAL = {
+  scene: { id: "askervein-demonstration", name: "Askervein" },
+  turbines: [],
+  farm: {
+    weighted_net_power_kw: 9000,
+    weighted_wake_loss_fraction: 0.038,
+    worst_turbine_id: "t-r2c1",
+    worst_sector_bearing_deg: 300,
+    worst_sector_speed_ms: 10.5,
+    worst_sector_wake_loss_kw: 3607,
+    worst_sector_wake_loss_fraction: 0.269,
+    worst_sector_frequency: 0.0056,
+  },
+  sectors: [{ sector_bearing_deg: 210, sector_weight: 0.14, wake_loss_fraction: 0.086, conditions: 32 }],
+  sectors_evaluated: 12,
+  conditions_evaluated: 327,
+  frequency_covered: 1,
+  provenance: { wake_loss_framing: "Modelled wake losses are a floor, not an upper limit." },
+};
+
+/** Route by endpoint. The workspace loads a scene, a provenance record, and an analysis. */
+function stubEndpoints(
+  overrides: {
+    analysis?: () => Response;
+    provenance?: () => Response;
+    scene?: () => Response;
+    annual?: () => Response;
+    comparison?: () => Response;
+  } = {},
+) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     if (url.includes("/api/analysis")) {
       return overrides.analysis?.() ?? new Response(JSON.stringify(ANALYSIS_FIXTURE), { status: 200 });
     }
+    if (url.includes("/api/annual")) {
+      return overrides.annual?.() ?? new Response(JSON.stringify(ANNUAL), { status: 200 });
+    }
+    if (url.includes("/api/comparison")) {
+      return overrides.comparison?.() ?? new Response(JSON.stringify({}), { status: 200 });
+    }
+    if (url.includes("/api/scenes/")) {
+      return (
+        overrides.scene?.() ??
+        new Response(JSON.stringify({ scene: SCENE, field_request: FIELD_REQUEST }), { status: 200 })
+      );
+    }
+    if (url.includes("/api/scenes")) {
+      return new Response(JSON.stringify(CATALOGUE), { status: 200 });
+    }
     return overrides.provenance?.() ?? new Response(JSON.stringify(PROVENANCE), { status: 200 });
   }));
+}
+
+/** The scene arrives over HTTP, so nothing in the viewport exists until it resolves. */
+async function renderReady() {
+  const result = render(<ViewerWorkspace />);
+  await screen.findByTestId("spatial-field");
+  return result;
 }
 
 beforeEach(() => {
@@ -77,8 +175,8 @@ afterEach(() => {
 });
 
 describe("ViewerWorkspace", () => {
-  it("exposes the viewer landmarks and current field conditions", () => {
-    render(<ViewerWorkspace />);
+  it("exposes the viewer landmarks and current field conditions", async () => {
+    await renderReady();
     expect(screen.getByRole("main")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: /three-dimensional wind field/i })).toBeInTheDocument();
     expect(screen.getByText("Askervein Hill")).toBeInTheDocument();
@@ -109,7 +207,7 @@ describe("ViewerWorkspace", () => {
 
   it("sends bearing and comfort changes to the field", async () => {
     const user = userEvent.setup();
-    render(<ViewerWorkspace />);
+    await renderReady();
     const field = screen.getByTestId("spatial-field");
 
     fireEvent.change(screen.getByRole("slider", { name: /wind bearing/i }), { target: { value: "225" } });
@@ -232,7 +330,7 @@ describe("ViewerWorkspace", () => {
 
   it("shares one selection between the list and the scene", async () => {
     const user = userEvent.setup();
-    render(<ViewerWorkspace />);
+    await renderReady();
     await screen.findByRole("region", { name: "Wake loss by turbine" });
 
     await user.click(screen.getByRole("button", { name: /scene turbine t-r2c2/i }));
@@ -260,10 +358,12 @@ describe("ViewerWorkspace", () => {
     // Keeping the previous bearing's numbers on screen beside a newly drawn field would be
     // worse than showing none.
     stubEndpoints({ analysis: () => new Response("no", { status: 500 }) });
-    render(<ViewerWorkspace />);
-    const alert = await screen.findByRole("alert");
+    await renderReady();
+    // Scoped to the analysis panel: the comparison and annual panels have their own alerts,
+    // and this test is about the ranked list refusing to show stale figures.
+    const alert = await within(screen.getByRole("complementary", { name: /wind field controls/i }))
+      .findByText(/figures are unavailable for this bearing/i);
     expect(alert).toHaveTextContent(/Analysis request failed \(500\)/);
-    expect(alert).toHaveTextContent(/figures are unavailable for this bearing/i);
   });
 
   it("says the layout does not turn with the wind", async () => {
@@ -272,8 +372,8 @@ describe("ViewerWorkspace", () => {
     expect(screen.getByText(/layout stays fixed at 210°/i)).toBeInTheDocument();
   });
 
-  it("rotates and zooms the scene with keyboard controls", () => {
-    render(<ViewerWorkspace />);
+  it("rotates and zooms the scene with keyboard controls", async () => {
+    await renderReady();
     const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
     const field = screen.getByTestId("spatial-field");
 
@@ -284,8 +384,8 @@ describe("ViewerWorkspace", () => {
     expect(field).toHaveAttribute("data-zoom", "1.08");
   });
 
-  it("rotates on drag and zooms on wheel", () => {
-    render(<ViewerWorkspace />);
+  it("rotates on drag and zooms on wheel", async () => {
+    await renderReady();
     const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
     const field = screen.getByTestId("spatial-field");
     Object.defineProperty(viewport, "setPointerCapture", { value: () => undefined });

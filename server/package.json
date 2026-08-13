@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "validate": "tsx scripts/validate.ts",
     "validate:anchors": "tsx scripts/validateAnchors.ts",
-    "choose:bearing": "tsx scripts/chooseAlternateBearing.ts"
+    "choose:bearing": "tsx scripts/chooseAlternateBearing.ts",
+    "fetch:rose": "tsx scripts/fetchWindRose.ts",
+    "choose:test-scene": "tsx scripts/chooseTestingScene.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.12",

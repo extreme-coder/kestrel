@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { openDatabase } from '../src/db/index.js'
 import type { DB } from '../src/db/index.js'
 import {
+  SERIES_SCHEMA_VERSION,
   WindSourceError,
   buildArchiveUrl,
   fetchWindSeries,
@@ -20,6 +21,10 @@ describe('archive URL', () => {
 
     expect(hourly).toContain('wind_speed_10m')
     expect(hourly).toContain('wind_speed_100m')
+    // Directions are what make a wind rose possible; without them the "common sector" a
+    // bearing choice rests on can only be assumed. See docs/design/alternate-bearing.md.
+    expect(hourly).toContain('wind_direction_10m')
+    expect(hourly).toContain('wind_direction_100m')
     expect(hourly).toContain('temperature_2m')
     expect(hourly).toContain('surface_pressure')
     expect(hourly).toContain('relative_humidity_2m')
@@ -39,6 +44,8 @@ describe('parseArchiveResponse', () => {
         time: ['2019-01-01T00:00'],
         wind_speed_10m: [6],
         wind_speed_100m: [9],
+        wind_direction_10m: [200],
+        wind_direction_100m: [210],
         temperature_2m: [10],
         surface_pressure: [1013.25],
         relative_humidity_2m: [80],
@@ -50,6 +57,49 @@ describe('parseArchiveResponse', () => {
     // hPa becomes Pa, percent becomes a fraction.
     expect(parsed.samples[0]!.surfacePressurePa).toBeCloseTo(101325, 6)
     expect(parsed.samples[0]!.relativeHumidity).toBeCloseTo(0.8, 9)
+    // Degrees are carried through unchanged: ERA5's meteorological "from" convention is
+    // already the one the wake, layout and field-request code use.
+    expect(parsed.samples[0]!.windDirection10mDeg).toBe(200)
+    expect(parsed.samples[0]!.windDirection100mDeg).toBe(210)
+  })
+
+  it('folds a 360 degree bearing onto 0 so due north is one bin, not two', () => {
+    const parsed = parseArchiveResponse({
+      latitude: 1,
+      longitude: 2,
+      hourly: {
+        time: ['2019-01-01T00:00'],
+        wind_speed_10m: [6],
+        wind_speed_100m: [9],
+        wind_direction_10m: [360],
+        wind_direction_100m: [360],
+        temperature_2m: [10],
+        surface_pressure: [1013],
+        relative_humidity_2m: [80],
+      },
+    })
+    expect(parsed.samples[0]!.windDirection100mDeg).toBe(0)
+  })
+
+  it('drops an hour that has a speed but no direction', () => {
+    // The two are one measurement in polar form — ERA5 stores u and v — so an hour like this
+    // should not exist. If one does, substituting a bearing would put a fabricated direction
+    // into the rose as though it had been recorded.
+    const parsed = parseArchiveResponse({
+      latitude: 1,
+      longitude: 2,
+      hourly: {
+        time: ['2019-01-01T00:00', '2019-01-01T01:00'],
+        wind_speed_10m: [6, 6],
+        wind_speed_100m: [9, 9],
+        wind_direction_10m: [210, 210],
+        wind_direction_100m: [210, null],
+        temperature_2m: [10, 10],
+        surface_pressure: [1013, 1013],
+        relative_humidity_2m: [80, 80],
+      },
+    })
+    expect(parsed.samples).toHaveLength(1)
   })
 
   it('drops hours with missing fields rather than imputing them', () => {
@@ -61,6 +111,8 @@ describe('parseArchiveResponse', () => {
         time: ['2019-01-01T00:00', '2019-01-01T01:00', '2019-01-01T02:00'],
         wind_speed_10m: [6, null, 6],
         wind_speed_100m: [9, 9, 9],
+        wind_direction_10m: [210, 210, 210],
+        wind_direction_100m: [210, 210, 210],
         temperature_2m: [10, 10, 10],
         surface_pressure: [1013, 1013, 1013],
         relative_humidity_2m: [80, 80, 80],
@@ -77,6 +129,8 @@ describe('parseArchiveResponse', () => {
         time: ['2019-01-01T00:00'],
         wind_speed_10m: [6],
         wind_speed_100m: [9],
+        wind_direction_10m: [210],
+        wind_direction_100m: [210],
         temperature_2m: [10],
         surface_pressure: [1013],
         relative_humidity_2m: [null],
@@ -162,6 +216,16 @@ describe('WindCache', () => {
     )
     expect(cacheKey({ latitude: 50.66, longitude: -0.28, ...RANGE })).not.toBe(
       cacheKey({ latitude: 50.66, longitude: -0.28, startDate: '2018-01-01', endDate: '2018-12-31' }),
+    )
+  })
+
+  it('leads the key with the series schema version', () => {
+    // A stored series is JSON with a fixed shape and a 30-day TTL. When directions were added
+    // at step 11, every row already in the cache lacked them — and a wind rose built from one
+    // of those would have come out empty rather than obviously broken. A shape change has to
+    // invalidate its own rows, the same way a physics change invalidates a cached volume.
+    expect(cacheKey({ latitude: 50.66, longitude: -0.28, ...RANGE })).toBe(
+      `v${SERIES_SCHEMA_VERSION}:50.66:-0.28:2019-01-01:2019-12-31`,
     )
   })
 

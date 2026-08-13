@@ -9,6 +9,7 @@ import { ProgressBus } from '../src/lib/events.js'
 import type { FetchLike } from '../src/lib/openmeteo.js'
 import { PHYSICS_MODEL_VERSION } from '../src/lib/provenance.js'
 import { WindCache } from '../src/lib/windCache.js'
+import { SCENE_FORMAT_VERSION } from '../src/schemas.js'
 import { makeSeries, toArchiveJson } from './helpers/fakeWind.js'
 
 /** Concrete shape rather than `Record`, which `noUncheckedIndexedAccess` makes unusable. */
@@ -52,6 +53,73 @@ interface AnalysisResponse {
     wake_loss_framing: string
     quantities: Record<string, string[] | undefined>
   }
+}
+
+interface SceneListResponse {
+  scene_format_version: number
+  scenes: { id: string; turbine_count: number; has_wind_rose: boolean }[]
+  sites: { id: string; has_wind_rose: boolean }[]
+}
+
+interface SceneResponse {
+  scene: { kestrel_scene: number; wind_rose?: unknown; layout: unknown; terrain: unknown }
+  field_request: {
+    terrain: { elevations_m: number[] }
+    layout: { orientation_bearing_deg?: number }
+  }
+}
+
+interface ValidateResponse {
+  valid: boolean
+  summary: {
+    turbine_count: number
+    terrain_source: string
+    wind_rose_sectors: number
+    wind_rose_conditions: number
+  }
+}
+
+interface ComparisonResponse {
+  baseline: { bearing_deg: number }
+  candidate: { bearing_deg: number }
+  turbines: { turbine_id: string; delta_net_power_kw: number }[]
+  farm: {
+    baseline_farm_wake_loss_fraction: number
+    candidate_farm_wake_loss_fraction: number
+    delta_total_net_power_kw: number
+    worst_turbine_changed: boolean
+  }
+  matched_turbine_ids: string[]
+  only_in_baseline: string[]
+  provenance: { wake_loss_framing: string; quantities: Record<string, string[] | undefined> }
+}
+
+interface AnnualResponse {
+  layout: { orientation_bearing_deg: number }
+  turbines: Record<string, unknown>[]
+  farm: {
+    weighted_wake_loss_fraction: number
+    worst_sector_wake_loss_fraction: number
+    worst_sector_wake_loss_kw: number
+    worst_sector_frequency: number
+  }
+  sectors: { sector_bearing_deg: number; wake_loss_fraction: number; conditions: number }[]
+  sectors_evaluated: number
+  conditions_evaluated: number
+  frequency_covered: number
+  provenance: { quantities: Record<string, string[] | undefined> }
+}
+
+interface WindRoseResponse {
+  sector_width_deg: number
+  sectors: {
+    centre_deg: number
+    from_deg: number
+    frequency: number
+    speed_bins: { frequency: number }[]
+  }[]
+  common_sector: { centre_deg: number }
+  provenance: { result: string; quantities: Record<string, string[] | undefined> }
 }
 
 /** Synthetic field with a maximum near 50.8 N, 0.2 W. */
@@ -271,6 +339,318 @@ describe('API', () => {
       }
       for (const key of Object.keys(result.farm)) {
         expect(quantities[key], `farm field ${key}`).toBeDefined()
+      }
+    })
+  })
+
+  describe('GET /api/scenes', () => {
+    it('lists the bundled scenes and the sites they can name', async () => {
+      const result = await json<SceneListResponse>(app.request('/api/scenes'))
+      expect(result.scene_format_version).toBe(SCENE_FORMAT_VERSION)
+      expect(result.scenes.map((scene) => scene.id)).toContain('askervein-demonstration')
+      expect(result.scenes.map((scene) => scene.id)).toContain('askervein-testing')
+      expect(result.sites.map((site) => site.id)).toContain('askervein-copernicus-glo30')
+      // Terrain payloads are deliberately absent here: the list is for choosing, and a
+      // thousand elevations per scene would make it the largest response in the API.
+      expect(JSON.stringify(result).length).toBeLessThan(4000)
+    })
+
+    it('serves one scene with the field request it lowers onto', async () => {
+      const result = await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))
+      expect(result.scene.kestrel_scene).toBe(SCENE_FORMAT_VERSION)
+      expect(result.field_request.terrain.elevations_m).toHaveLength(33 * 33)
+      expect(result.field_request.layout.orientation_bearing_deg).toBe(210)
+    })
+
+    it('404s an unknown scene with the ids that exist', async () => {
+      const res = await app.request('/api/scenes/not-a-scene')
+      expect(res.status).toBe(404)
+      const body = (await res.json()) as { available: string[] }
+      expect(body.available).toContain('askervein-demonstration')
+    })
+  })
+
+  describe('POST /api/scenes/validate', () => {
+    let scene: Record<string, unknown>
+
+    beforeEach(async () => {
+      scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene as unknown as Record<string, unknown>
+    })
+
+    it('accepts a bundled scene and reports what it describes', async () => {
+      const result = await json<ValidateResponse>(app.request('/api/scenes/validate', postJson(scene)))
+      expect(result.valid).toBe(true)
+      expect(result.summary.turbine_count).toBe(4)
+      expect(result.summary.terrain_source).toBe('bundled-site')
+      expect(result.summary.wind_rose_sectors).toBe(12)
+      expect(result.summary.wind_rose_conditions).toBeGreaterThan(200)
+    })
+
+    it('rejects a file that is not JSON, with a message about the file', async () => {
+      const res = await app.request('/api/scenes/validate', { method: 'POST', body: 'not json' })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error: string; message: string }
+      expect(body.error).toBe('invalid_scene')
+      expect(body.message).toMatch(/not valid JSON/i)
+    })
+
+    it('names the path of every problem rather than failing on the first', async () => {
+      // The point of validating before any field request: a bad import has to fail as a list
+      // of paths the user can act on, not as a 400 from a physics endpoint about a body they
+      // never wrote.
+      const res = await app.request(
+        '/api/scenes/validate',
+        postJson({ ...scene, kestrel_scene: 99, wind: { bearing_deg: 'south', speed_ms: -4 } }),
+      )
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { issues: { path: string; message: string }[] }
+      const paths = body.issues.map((issue) => issue.path)
+      expect(paths).toContain('kestrel_scene')
+      expect(paths.some((path) => path.startsWith('wind.'))).toBe(true)
+    })
+
+    it('rejects an unknown site with the list of sites that exist', async () => {
+      const res = await app.request(
+        '/api/scenes/validate',
+        postJson({ ...scene, terrain: { site_id: 'ben-nevis' } }),
+      )
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { message: string; available: string[] }
+      expect(body.message).toMatch(/bundled site/i)
+      expect(body.available).toContain('askervein-copernicus-glo30')
+    })
+
+    it('rejects an unknown turbine with the catalogue', async () => {
+      const res = await app.request(
+        '/api/scenes/validate',
+        postJson({ ...scene, layout: { ...(scene.layout as object), turbine: 'acme-1' } }),
+      )
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { available: string[] }
+      expect(body.available).toContain('vestas-v112-3450')
+    })
+
+    it('rejects a wind rose whose frequencies do not close', async () => {
+      // A rose that does not sum to 1 is not a distribution, and every weighted figure from it
+      // would be silently scaled by whatever the sum happened to be.
+      const rose = scene.wind_rose as { sectors: { frequency: number }[] }
+      const broken = { ...rose, sectors: rose.sectors.map((sector) => ({ ...sector, frequency: sector.frequency / 2 })) }
+      const res = await app.request('/api/scenes/validate', postJson({ ...scene, wind_rose: broken }))
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { issues: { path: string; message: string }[] }
+      expect(body.issues.some((issue) => /sum to 1/.test(issue.message))).toBe(true)
+    })
+
+    it('accepts explicit turbine coordinates and rejects duplicate ids', async () => {
+      const explicit = {
+        ...scene,
+        layout: {
+          turbine: 'vestas-v112-3450',
+          hub_height_m: 100,
+          orientation_bearing_deg: 210,
+          turbines: [
+            { id: 'a', easting_m: 900, northing_m: 900 },
+            { id: 'b', easting_m: 1400, northing_m: 1400 },
+          ],
+        },
+      }
+      const ok = await json<ValidateResponse>(app.request('/api/scenes/validate', postJson(explicit)))
+      expect(ok.valid).toBe(true)
+      expect(ok.summary.turbine_count).toBe(2)
+
+      const duplicated = {
+        ...explicit,
+        layout: {
+          ...explicit.layout,
+          turbines: [
+            { id: 'a', easting_m: 900, northing_m: 900 },
+            { id: 'a', easting_m: 1400, northing_m: 1400 },
+          ],
+        },
+      }
+      const res = await app.request('/api/scenes/validate', postJson(duplicated))
+      expect(res.status).toBe(400)
+    })
+
+    it('rejects a layout that is neither a grid nor a list of coordinates', async () => {
+      const res = await app.request(
+        '/api/scenes/validate',
+        postJson({ ...scene, layout: { turbine: 'vestas-v112-3450', hub_height_m: 100 } }),
+      )
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { issues: { message: string }[] }
+      expect(body.issues.some((issue) => /layout.turbines/.test(issue.message))).toBe(true)
+    })
+  })
+
+  describe('POST /api/comparison', () => {
+    const side = (bearingDeg: number) => ({
+      terrain: { site_id: 'flat', origin_easting_m: 0, origin_northing_m: 0, columns: 9, rows: 9, cell_size_easting_m: 400, cell_size_northing_m: 400, elevations_m: Array(81).fill(0) },
+      layout: { turbine: 'vestas-v112-3450', rows: 2, columns: 1, downwind_spacing_d: 8, hub_height_m: 100, orientation_bearing_deg: 270, origin_easting_m: 1600, origin_northing_m: 1600 },
+      wind: { bearing_deg: bearingDeg, speed_ms: 9, turbulence_intensity: 0.08 },
+      volume: { levels: 4, top_elevation_m: 600 },
+    })
+
+    it('differences two scenes and names what changed', async () => {
+      const result = await json<ComparisonResponse>(
+        app.request('/api/comparison', postJson({ baseline: side(270), candidate: side(180) })),
+      )
+      expect(result.baseline.bearing_deg).toBe(270)
+      expect(result.candidate.bearing_deg).toBe(180)
+      expect(result.matched_turbine_ids).toHaveLength(2)
+      expect(result.only_in_baseline).toEqual([])
+      // At 270 the array is in line and wakes; at 180 it is broadside and does not.
+      expect(result.farm.baseline_farm_wake_loss_fraction).toBeGreaterThan(0.1)
+      expect(result.farm.candidate_farm_wake_loss_fraction).toBeLessThan(0.01)
+      expect(result.farm.delta_total_net_power_kw).toBeGreaterThan(0)
+    })
+
+    it('reports zero deltas when both sides are the same scene', async () => {
+      const result = await json<ComparisonResponse>(
+        app.request('/api/comparison', postJson({ baseline: side(270), candidate: side(270) })),
+      )
+      expect(result.farm.delta_total_net_power_kw).toBe(0)
+      expect(result.farm.worst_turbine_changed).toBe(false)
+      for (const delta of result.turbines) expect(delta.delta_net_power_kw).toBe(0)
+    })
+
+    it('names the claim behind every quantity it reports', async () => {
+      const result = await json<ComparisonResponse>(
+        app.request('/api/comparison', postJson({ baseline: side(270), candidate: side(180) })),
+      )
+      expect(result.provenance.wake_loss_framing).toContain('floor')
+      // `baseline_x`, `candidate_x` and `delta_x` are three renderings of one quantity, so the
+      // map may name the bare quantity — but every rendered field must resolve to something.
+      const claimFor = (key: string) =>
+        result.provenance.quantities[key] ??
+        result.provenance.quantities[key.replace(/^(baseline|candidate|delta)_/, '')]
+      for (const key of Object.keys(result.turbines[0]!)) {
+        if (key === 'turbine_id') continue
+        expect(claimFor(key), `comparison turbine field ${key}`).toBeDefined()
+      }
+      for (const key of Object.keys(result.farm)) {
+        expect(claimFor(key), `comparison farm field ${key}`).toBeDefined()
+      }
+    })
+
+    it('rejects a body missing a side, or naming a turbine that does not exist', async () => {
+      expect((await app.request('/api/comparison', postJson({ baseline: side(270) }))).status).toBe(400)
+      expect((await app.request('/api/comparison', { method: 'POST', body: 'x' })).status).toBe(400)
+      const unknown = { ...side(270), layout: { ...side(270).layout, turbine: 'acme-1' } }
+      expect(
+        (await app.request('/api/comparison', postJson({ baseline: side(270), candidate: unknown }))).status,
+      ).toBe(404)
+    })
+  })
+
+  /**
+   * These run against the real bundled rose, so each one is twelve mass-consistent solves on
+   * a fresh in-memory database — the cache that makes this cheap in production is empty in
+   * every `beforeEach`. That is 2-4 seconds idle and more on a loaded machine, comfortably
+   * past vitest's 5 s default, so the budget is stated rather than left to be discovered as a
+   * flake. Weighting a cheaper synthetic rose instead would stop testing the thing that
+   * matters: that the shipped scene's dominant sector is not silently zeroed.
+   */
+  describe('POST /api/annual', { timeout: 45_000 }, () => {
+    it('weights the whole rose and separates expected from worst', async () => {
+      const scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene
+      const result = await json<AnnualResponse>(app.request('/api/annual', postJson(scene)))
+
+      expect(result.frequency_covered).toBeCloseTo(1, 6)
+      expect(result.sectors_evaluated).toBe(12)
+      expect(result.conditions_evaluated).toBeGreaterThan(200)
+
+      // The distinction the endpoint exists for. A rare severe condition must not be reported
+      // as an annual expectation, and an annual expectation must not hide a severe condition.
+      expect(result.farm.weighted_wake_loss_fraction).toBeGreaterThan(0)
+      expect(result.farm.worst_sector_wake_loss_fraction).toBeGreaterThan(
+        result.farm.weighted_wake_loss_fraction,
+      )
+      expect(result.farm.worst_sector_frequency).toBeLessThan(0.2)
+      expect(result.farm.worst_sector_wake_loss_kw).toBeGreaterThan(0)
+    })
+
+    it('does not zero the dominant sector because its average speed is above rated', async () => {
+      // The bug this endpoint was rebuilt to fix. Askervein's dominant sector has an
+      // energy-equivalent speed of 13.1 m/s against the V112's 12.5 m/s rated, so weighting on
+      // one speed per direction reported 0.00% loss at 210 degrees — the bearing the whole
+      // demonstration is built around.
+      const scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene
+      const result = await json<AnnualResponse>(app.request('/api/annual', postJson(scene)))
+      const dominant = result.sectors.find((sector) => sector.sector_bearing_deg === 210)!
+      expect(dominant.wake_loss_fraction).toBeGreaterThan(0.01)
+      expect(dominant.conditions).toBeGreaterThan(10)
+    })
+
+    it('pins the array while it sweeps bearings', async () => {
+      // D26 in its most invisible form: sweep direction without pinning orientation and the
+      // farm rotates with the wind, so every sector returns identical geometry and the
+      // "expected" loss is the single-bearing loss wearing a hat.
+      const scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene
+      const result = await json<AnnualResponse>(app.request('/api/annual', postJson(scene)))
+      expect(result.layout.orientation_bearing_deg).toBe(210)
+      const losses = new Set(result.sectors.map((sector) => sector.wake_loss_fraction.toFixed(6)))
+      expect(losses.size).toBeGreaterThan(1)
+    })
+
+    it('refuses rather than inventing a rose it does not have', async () => {
+      const scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene
+      const homeless = { ...scene, wind_rose: undefined, terrain: { site_id: 'somewhere', columns: 3, rows: 3, cell_size_easting_m: 200, cell_size_northing_m: 200, elevations_m: [0, 0, 0, 0, 0, 0, 0, 0, 0] } }
+      const res = await app.request('/api/annual', postJson(homeless))
+      expect(res.status).toBe(422)
+      const body = (await res.json()) as { error: string; message: string }
+      expect(body.error).toBe('no_wind_rose')
+      expect(body.message).toMatch(/wind-rose/)
+    })
+
+    it('names the claim behind every quantity it reports', async () => {
+      const scene = (await json<SceneResponse>(app.request('/api/scenes/askervein-demonstration'))).scene
+      const result = await json<AnnualResponse>(app.request('/api/annual', postJson(scene)))
+      for (const key of Object.keys(result.turbines[0]!)) {
+        expect(result.provenance.quantities[key], `turbine field ${key}`).toBeDefined()
+      }
+      for (const key of Object.keys(result.farm)) {
+        expect(result.provenance.quantities[key], `farm field ${key}`).toBeDefined()
+      }
+    })
+  })
+
+  describe('GET /api/wind-rose', () => {
+    it('bins direction into sectors centred on their nominal bearing', async () => {
+      const result = await json<WindRoseResponse>(
+        app.request('/api/wind-rose?lat=50.8&lon=-0.2&date_from=2019-01-01&date_to=2019-01-02'),
+      )
+      expect(result.sectors).toHaveLength(12)
+      expect(result.sector_width_deg).toBe(30)
+      expect(result.sectors[0]!.centre_deg).toBe(0)
+      expect(result.sectors[0]!.from_deg).toBe(345)
+      // The stub series blows steadily from 270.
+      expect(result.sectors[9]!.centre_deg).toBe(270)
+      expect(result.sectors[9]!.frequency).toBeCloseTo(1, 6)
+      expect(result.common_sector.centre_deg).toBe(270)
+    })
+
+    it('carries speed bins, which is what makes weighting possible', async () => {
+      const result = await json<WindRoseResponse>(app.request('/api/wind-rose?lat=50.8&lon=-0.2'))
+      const dominant = result.sectors[9]!
+      expect(dominant.speed_bins.length).toBeGreaterThan(0)
+      const binned = dominant.speed_bins.reduce((sum, bin) => sum + bin.frequency, 0)
+      expect(binned).toBeCloseTo(dominant.frequency, 6)
+    })
+
+    it('validates its query and its date range', async () => {
+      expect((await app.request('/api/wind-rose?lon=-0.2')).status).toBe(400)
+      expect((await app.request('/api/wind-rose?lat=50.8&lon=-0.2&sectors=3')).status).toBe(400)
+      expect(
+        (await app.request('/api/wind-rose?lat=50.8&lon=-0.2&date_from=2019-12-31&date_to=2019-01-01')).status,
+      ).toBe(400)
+    })
+
+    it('names the claim behind every quantity it reports', async () => {
+      const result = await json<WindRoseResponse>(app.request('/api/wind-rose?lat=50.8&lon=-0.2'))
+      expect(result.provenance.result).toBe('derived')
+      for (const key of ['frequency', 'energy_speed_ms', 'energy_share', 'common_sector']) {
+        expect(result.provenance.quantities[key], key).toBeDefined()
       }
     })
   })

@@ -12,6 +12,7 @@
  * Result and reasoning: `docs/design/alternate-bearing.md`. No network, no database.
  */
 
+import { ASKERVEIN_COMMON_SECTOR, ASKERVEIN_WIND_ROSE } from '../src/lib/askerveinRose.js'
 import { solveMassConsistentBaseFlow } from '../src/lib/baseFlow.js'
 import { analyseTerrainFarm } from '../src/lib/farmAnalysis.js'
 import type { FarmAnalysis } from '../src/lib/farmAnalysis.js'
@@ -19,6 +20,7 @@ import { generateGridLayout } from '../src/lib/layout.js'
 import { buildWakeStreamlines } from '../src/lib/terrainWake.js'
 import { getTurbineModel } from '../src/lib/turbines.js'
 import { askerveinTerrainGrid } from '../src/lib/validation/askerveinTerrain.js'
+import { sectorBearings } from '../src/lib/windRose.js'
 
 /**
  * The demonstration scene, exactly as `client/src/features/site/askervein.ts` sends it.
@@ -47,15 +49,15 @@ const SCENE = {
 const BASELINE_DEG = 210
 
 /**
- * The site's common wind sector — south-westerly.
+ * The site's common wind sector — the arc carrying half its wind energy.
  *
- * **Provisional.** The rule asks for the sector from the wind rose that step 11's frequency
- * weighting requires, and that rose does not exist yet: the ERA5 client fetches speeds but
- * not directions. Until it does, the sector is the campaign's own: Askervein was sited and
- * run for south-westerly flow, and the Outer Hebrides' prevailing direction is the reason
- * TU03-B is a 210 degree case. Step 11 must re-run this script against the real rose.
+ * **Derived, as of step 11.** This was the campaign's assumed 180-270 degrees until the ERA5
+ * client learned to fetch directions; it is now whatever `commonSector` returns for the
+ * recorded five-year rose. The assumption was close and not right: the real arc sits 15
+ * degrees clockwise of it. The decision below survived the correction, which is a reason to
+ * keep deriving it rather than a reason to have trusted the guess.
  */
-const SECTOR = { fromDeg: 180, toDeg: 270 } as const
+const SECTOR = ASKERVEIN_COMMON_SECTOR
 
 /**
  * Bearing resolution, in degrees.
@@ -120,16 +122,20 @@ const baseline = analyse(BASELINE_DEG)
 const baselineOrder = ranking(baseline)
 const baselineTopTwo = baselineOrder.slice(0, 2)
 
-const candidates: number[] = []
-for (let bearing: number = SECTOR.fromDeg; bearing <= SECTOR.toDeg; bearing += STEP_DEG) {
-  if (bearing !== BASELINE_DEG) candidates.push(bearing)
-}
+const candidates = sectorBearings(SECTOR, STEP_DEG).filter((bearing) => bearing !== BASELINE_DEG)
 // Rule 2 asks for the *smallest* change that reorders, so walk outward from the baseline.
 candidates.sort((a, b) => Math.abs(a - BASELINE_DEG) - Math.abs(b - BASELINE_DEG) || a - b)
 
 console.log(`Askervein demonstration layout — ${SCENE.rows}x${SCENE.columns} ${model.name}`)
 console.log(`Layout orientation ${SCENE.orientationBearingDeg} deg, wind ${SCENE.speedMs} m/s, TI ${(SCENE.turbulenceIntensity * 100).toFixed(0)}%`)
-console.log(`Sector ${SECTOR.fromDeg}-${SECTOR.toDeg} deg at ${STEP_DEG} deg steps (provisional; see the script header)\n`)
+console.log(
+  `Sector ${SECTOR.fromDeg}-${SECTOR.toDeg} deg at ${STEP_DEG} deg steps, derived from the recorded ` +
+  `ERA5 rose (${ASKERVEIN_WIND_ROSE.startDate}..${ASKERVEIN_WIND_ROSE.endDate}, ${ASKERVEIN_WIND_ROSE.hours} h): ` +
+  `${(SECTOR.energyShare * 100).toFixed(1)}% of wind energy, ${(SECTOR.frequency * 100).toFixed(1)}% of hours`,
+)
+console.log(
+  `Dominant sector by energy: ${ASKERVEIN_WIND_ROSE.sectors[ASKERVEIN_WIND_ROSE.dominantSectorIndex]!.centreDeg} deg\n`,
+)
 
 console.log(`Baseline ${BASELINE_DEG} deg`)
 for (const turbine of [...baseline.turbines].sort((a, b) => b.wakeLossFraction - a.wakeLossFraction)) {

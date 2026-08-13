@@ -245,13 +245,60 @@ export const RESULT_CLAIMS: readonly ResultClaim[] = [
     id: 'wind-time-series',
     label: 'Wind data',
     provenance: 'derived',
-    description: 'Hourly wind speeds from the ERA5 reanalysis, via Open-Meteo.',
+    description: 'Hourly wind speeds and directions from the ERA5 reanalysis, via Open-Meteo.',
     validation: 'internally-tested',
     note:
       'ERA5 is a reanalysis rather than a measurement, on a roughly 25 km grid. It resolves ' +
       'synoptic weather, not local topographic acceleration, which makes it the dominant error ' +
       'term at any complex-terrain site. Parsing and caching are tested; the values are not ' +
       'compared against a mast.',
+  },
+  {
+    id: 'wind-rose',
+    label: 'Wind rose',
+    provenance: 'derived',
+    description:
+      'How often, and with how much energy, the wind arrives from each direction. Binned from ' +
+      'the hourly ERA5 direction record at the reported 100 m level.',
+    validation: 'internally-tested',
+    note:
+      'Inherits everything that qualifies the ERA5 series it is binned from: a reanalysis on a ' +
+      'roughly 25 km grid, not a mast. The direction distribution is the synoptic one, which is ' +
+      'what a rose is for, but it carries no local terrain channelling — the cell serving ' +
+      'Askervein is 8 km away and 67 m above sea level, and the hill is not in it. Binning, ' +
+      'sector arithmetic and the energy weighting are tested; the distribution itself has not ' +
+      'been compared against a measured rose.',
+  },
+  {
+    id: 'annual-wake-loss',
+    label: 'Expected annual loss',
+    provenance: 'computed',
+    description:
+      'Wake loss expected over a year, weighting each direction sector by the share of wind ' +
+      'energy that arrives in it.',
+    validation: 'unvalidated',
+    note:
+      'Two approximations sit on top of every limitation the single-bearing loss already has. ' +
+      'Each sector is evaluated at one bearing and one speed, so within-sector variation is ' +
+      'lost — and the demonstration layout moves 9 percentage points across 5 degrees, which is ' +
+      'far finer than the 30 degree bins. The representative speed preserves the sector\'s mean ' +
+      'wind power density, which is not the same as integrating the power curve over the speed ' +
+      'distribution inside it. Read this as an expectation over directions, not as annual energy.',
+  },
+  {
+    id: 'scenario-delta',
+    label: 'Comparison',
+    provenance: 'computed',
+    description:
+      'The difference between a pinned baseline scene and a candidate, per turbine and for the ' +
+      'farm total.',
+    validation: 'unvalidated',
+    note:
+      'A difference between two model outputs, so it cancels nothing: both sides carry the same ' +
+      'unanchored composition of wakes over terrain, and a delta is no better anchored than the ' +
+      'two figures it subtracts. It is more trustworthy than either absolute figure only in the ' +
+      'narrow sense that shared bias partly cancels, and that has not been quantified because ' +
+      'there is no measurement to quantify it against.',
   },
   {
     id: 'capacity-factor',
@@ -314,6 +361,82 @@ export const ANALYSIS_QUANTITY_CLAIMS: Readonly<Record<string, readonly string[]
   total_wake_loss_kw: ['wake-deficit', 'turbine-power'],
   farm_wake_loss_fraction: ['wake-deficit'],
   worst_turbine_id: ['wake-deficit'],
+} as const
+
+/** Which claims back each quantity `GET /api/wind-rose` reports. */
+export const WIND_ROSE_QUANTITY_CLAIMS: Readonly<Record<string, readonly string[]>> = {
+  hours: ['wind-time-series'],
+  frequency: ['wind-rose'],
+  mean_speed_ms: ['wind-time-series'],
+  energy_speed_ms: ['wind-rose', 'wind-time-series'],
+  energy_share: ['wind-rose'],
+  common_sector: ['wind-rose'],
+  dominant_sector_index: ['wind-rose'],
+} as const
+
+/** Which claims back each quantity `POST /api/annual` reports. */
+export const ANNUAL_QUANTITY_CLAIMS: Readonly<Record<string, readonly string[]>> = {
+  turbine_id: ['farm-layout-geometry'],
+  sector_weight: ['wind-rose'],
+  sector_bearing_deg: ['wind-rose'],
+  weighted_wake_loss_fraction: ['annual-wake-loss'],
+  weighted_gross_power_kw: ['annual-wake-loss', 'turbine-power'],
+  weighted_net_power_kw: ['annual-wake-loss', 'turbine-power'],
+  weighted_wake_loss_kw: ['annual-wake-loss', 'wake-deficit'],
+  wake_loss_fraction: ['wake-deficit'],
+  gross_power_kw: ['turbine-power', 'terrain-base-flow'],
+  net_power_kw: ['turbine-power', 'hub-wind-speed'],
+  // The worst condition is a different quantity from the expected one, and the split is the
+  // whole reason this endpoint exists: a rare severe wake and an annual expectation are not
+  // the same claim and must not share a label.
+  worst_turbine_id: ['annual-wake-loss'],
+  worst_sector_bearing_deg: ['annual-wake-loss', 'wind-rose'],
+  worst_sector_speed_ms: ['wind-rose', 'wind-time-series'],
+  worst_sector_wake_loss_kw: ['wake-deficit', 'turbine-power'],
+  worst_sector_wake_loss_fraction: ['wake-deficit'],
+  worst_sector_frequency: ['wind-rose'],
+} as const
+
+/** Which claims back each quantity `POST /api/comparison` reports. */
+export const COMPARISON_QUANTITY_CLAIMS: Readonly<Record<string, readonly string[]>> = {
+  // The bare names cover the `baseline_` and `candidate_` renderings of the same quantity;
+  // the `delta_` entries are separate because a difference carries its own claim.
+  net_power_kw: ['turbine-power', 'hub-wind-speed'],
+  gross_power_kw: ['turbine-power', 'terrain-base-flow'],
+  wake_loss_kw: ['wake-deficit', 'turbine-power'],
+  wake_loss_fraction: ['wake-deficit'],
+  incoming_speed_ms: ['hub-wind-speed'],
+  dominant_contributor_id: ['wake-attribution'],
+  dominant_contributor_changed: ['scenario-delta', 'wake-attribution'],
+  total_net_power_kw: ['turbine-power', 'hub-wind-speed'],
+  total_gross_power_kw: ['turbine-power', 'terrain-base-flow'],
+  total_wake_loss_kw: ['wake-deficit', 'turbine-power'],
+  farm_wake_loss_fraction: ['wake-deficit'],
+  worst_turbine_id: ['wake-deficit'],
+  largest_mover_id: ['scenario-delta'],
+  delta_net_power_kw: ['scenario-delta', 'turbine-power'],
+  delta_gross_power_kw: ['scenario-delta', 'turbine-power'],
+  delta_wake_loss_kw: ['scenario-delta', 'wake-deficit'],
+  delta_wake_loss_fraction: ['scenario-delta', 'wake-deficit'],
+  delta_incoming_speed_ms: ['scenario-delta', 'hub-wind-speed'],
+  delta_total_net_power_kw: ['scenario-delta', 'turbine-power'],
+  delta_total_gross_power_kw: ['scenario-delta', 'turbine-power'],
+  delta_total_wake_loss_kw: ['scenario-delta', 'wake-deficit'],
+  delta_farm_wake_loss_fraction: ['scenario-delta', 'wake-deficit'],
+  worst_turbine_changed: ['scenario-delta', 'wake-attribution'],
+  matched_turbine_ids: ['farm-layout-geometry'],
+} as const
+
+/**
+ * Every quantity map, so a test can enforce the ADR 0004 rule across all of them at once
+ * rather than being extended by hand each time an endpoint is added — which is exactly the
+ * kind of upkeep that gets forgotten and leaves a figure rendered with no provenance.
+ */
+export const QUANTITY_CLAIM_MAPS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  analysis: ANALYSIS_QUANTITY_CLAIMS,
+  wind_rose: WIND_ROSE_QUANTITY_CLAIMS,
+  annual: ANNUAL_QUANTITY_CLAIMS,
+  comparison: COMPARISON_QUANTITY_CLAIMS,
 } as const
 
 /**

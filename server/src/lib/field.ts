@@ -81,6 +81,45 @@ export function encodeVelocityField(field: BaseFlowField, velocities: Float64Arr
   return output
 }
 
+/**
+ * Place the array: explicit coordinates when the scene supplies them, a generated grid
+ * otherwise.
+ *
+ * Both paths produce the same `FarmTurbine[]`, so nothing downstream — wakes, streamlines,
+ * analysis, the volume — can tell which one it came from. That is the point: an imported
+ * layout has to be as much of a first-class farm as a generated one, or the interesting
+ * cases stay unreachable.
+ */
+function resolveTurbines(input: FieldRequestBody, model: TurbineModel): FarmTurbine[] {
+  const explicit = input.layout.turbines
+  if (explicit) {
+    return explicit.map((turbine) => ({
+      id: turbine.id,
+      eastingM: turbine.easting_m,
+      northingM: turbine.northing_m,
+      hubHeightM: turbine.hub_height_m ?? input.layout.hub_height_m,
+      model,
+    }))
+  }
+  if (input.layout.rows === undefined || input.layout.columns === undefined) {
+    throw new RangeError('layout requires either turbines, or both rows and columns')
+  }
+  return generateGridLayout({
+    model,
+    rows: input.layout.rows,
+    columns: input.layout.columns,
+    crosswindSpacingD: input.layout.crosswind_spacing_d,
+    downwindSpacingD: input.layout.downwind_spacing_d,
+    // Falling back to the wind bearing keeps a bare layout request behaving as a layout
+    // generator should. A scene that lets the user change direction must send this, or
+    // the array rotates with the wind and no wake relation ever changes (D26).
+    prevailingBearingDeg: input.layout.orientation_bearing_deg ?? input.wind.bearing_deg,
+    hubHeightM: input.layout.hub_height_m,
+    staggerFraction: input.layout.stagger_fraction,
+    origin: { eastingM: input.layout.origin_easting_m, northingM: input.layout.origin_northing_m },
+  }).turbines
+}
+
 /** The solved scene both the volume and the per-turbine numbers are read off. */
 export interface ResolvedScene {
   field: BaseFlowField
@@ -132,6 +171,54 @@ export class FieldService {
   }
 
   /**
+   * Analyse one scene across many (bearing, speed) conditions.
+   *
+   * A wind rose asks for hundreds of these — twelve directions times a speed histogram — and
+   * running them through `analyse` one at a time would repeat the expensive part hundreds of
+   * times over. Two facts make that avoidable:
+   *
+   *   - the projection solve is **linear in speed**, so one unit solve per bearing serves
+   *     every speed in it, which `resolveScene` already relies on for its cache; and
+   *   - a streamline is integrated along the *normalised* velocity, so scaling the field
+   *     leaves the traced wake axes bit-for-bit identical. They are traced once per bearing.
+   *
+   * What remains per condition is the wake evaluation itself, which is the part that actually
+   * differs. Conditions are grouped by bearing rather than assumed sorted, so a caller can
+   * hand them over in rose order.
+   */
+  analyseConditions(
+    input: FieldRequestBody,
+    model: TurbineModel,
+    conditions: readonly { bearingDeg: number; speedMs: number }[],
+  ): FarmAnalysis[] {
+    const byBearing = new Map<number, number[]>()
+    conditions.forEach((condition, index) => {
+      const existing = byBearing.get(condition.bearingDeg)
+      if (existing) existing.push(index)
+      else byBearing.set(condition.bearingDeg, [index])
+    })
+
+    const results = new Array<FarmAnalysis>(conditions.length)
+    const turbines = resolveTurbines(input, model)
+
+    for (const [bearingDeg, indices] of byBearing) {
+      const unitField = this.unitBaseFlow({ ...input, wind: { ...input.wind, bearing_deg: bearingDeg } })
+      // Traced on the unit field: direction is what a streamline follows, and the unit field
+      // has the same directions as any scaling of it.
+      const streamlines = buildWakeStreamlines(unitField, turbines)
+      for (const index of indices) {
+        const speed = conditions[index]!.speedMs
+        results[index] = analyseTerrainFarm(scaleField(unitField, speed), turbines, streamlines, {
+          bearingDeg,
+          turbulenceIntensity: input.wind.turbulence_intensity,
+        })
+      }
+    }
+
+    return results
+  }
+
+  /**
    * Solve the base flow, place the layout, trace the wake axes, and resolve the operating
    * state — everything `POST /api/field` and `POST /api/analysis` must agree about.
    *
@@ -141,6 +228,24 @@ export class FieldService {
    * come to disagree about which turbine is worst.
    */
   private resolveScene(input: FieldRequestBody, model: TurbineModel): ResolvedScene {
+    const field = scaleField(this.unitBaseFlow(input), input.wind.speed_ms)
+    const turbines = resolveTurbines(input, model)
+    const streamlines = buildWakeStreamlines(field, turbines)
+    const analysis = analyseTerrainFarm(field, turbines, streamlines, {
+      bearingDeg: input.wind.bearing_deg,
+      turbulenceIntensity: input.wind.turbulence_intensity,
+    })
+    return { field, turbines, streamlines, analysis }
+  }
+
+  /**
+   * The mass-consistent solve at unit reference speed, from cache when it is there.
+   *
+   * Speed is deliberately absent from the key: the projection is linear, so one solve serves
+   * every speed at that bearing. That is what makes both the viewer's speed control and the
+   * annual sweep's speed histogram cheap.
+   */
+  private unitBaseFlow(input: FieldRequestBody): BaseFlowField {
     if (input.terrain.elevations_m.length !== input.terrain.columns * input.terrain.rows) {
       throw new RangeError(`elevations_m must contain ${input.terrain.columns * input.terrain.rows} values`)
     }
@@ -185,32 +290,16 @@ export class FieldService {
       this.db.prepare('INSERT INTO base_flow_cache (key, payload, created_at) VALUES (?, ?, ?)')
         .run(baseKey, JSON.stringify(store(unitField)), this.now())
     }
-    const scale = input.wind.speed_ms
-    const field: BaseFlowField = {
-      ...unitField,
-      eastMs: Float64Array.from(unitField.eastMs, value => value * scale),
-      northMs: Float64Array.from(unitField.northMs, value => value * scale),
-      upMs: Float64Array.from(unitField.upMs, value => value * scale),
-    }
-    const layout = generateGridLayout({
-      model,
-      rows: input.layout.rows,
-      columns: input.layout.columns,
-      crosswindSpacingD: input.layout.crosswind_spacing_d,
-      downwindSpacingD: input.layout.downwind_spacing_d,
-      // Falling back to the wind bearing keeps a bare layout request behaving as a layout
-      // generator should. A scene that lets the user change direction must send this, or
-      // the array rotates with the wind and no wake relation ever changes (D26).
-      prevailingBearingDeg: input.layout.orientation_bearing_deg ?? input.wind.bearing_deg,
-      hubHeightM: input.layout.hub_height_m,
-      staggerFraction: input.layout.stagger_fraction,
-      origin: { eastingM: input.layout.origin_easting_m, northingM: input.layout.origin_northing_m },
-    })
-    const streamlines = buildWakeStreamlines(field, layout.turbines)
-    const analysis = analyseTerrainFarm(field, layout.turbines, streamlines, {
-      bearingDeg: input.wind.bearing_deg,
-      turbulenceIntensity: input.wind.turbulence_intensity,
-    })
-    return { field, turbines: layout.turbines, streamlines, analysis }
+    return unitField
+  }
+}
+
+/** Scale a unit-speed solve to a real speed. Linear, which is the whole reason it is cached. */
+function scaleField(unitField: BaseFlowField, speedMs: number): BaseFlowField {
+  return {
+    ...unitField,
+    eastMs: Float64Array.from(unitField.eastMs, (value) => value * speedMs),
+    northMs: Float64Array.from(unitField.northMs, (value) => value * speedMs),
+    upMs: Float64Array.from(unitField.upMs, (value) => value * speedMs),
   }
 }

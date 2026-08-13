@@ -20,7 +20,13 @@ import { ModelDisclosure } from "@/features/provenance/ModelDisclosure";
 import { ProvenanceTag } from "@/features/provenance/ProvenanceTag";
 import { useProvenance } from "@/features/provenance/useProvenance";
 import type { ProvenanceState } from "@/features/provenance/useProvenance";
-import { ASKERVEIN_FIELD_REQUEST } from "@/features/site/askervein";
+import { AnnualPanel } from "@/features/scenario/AnnualPanel";
+import { ComparisonPanel } from "@/features/scenario/ComparisonPanel";
+import { ScenarioPicker } from "@/features/scenario/ScenarioPicker";
+import { useScenario } from "@/features/scenario/useScenario";
+import type { Scenario } from "@/features/scenario/useScenario";
+import type { FieldRequest } from "@/features/scenario/scenario";
+import type { SceneTerrain } from "@/features/site/SiteScene";
 import { SpatialFieldViewport } from "@/features/spatial-field/SpatialFieldViewport";
 
 const SPEED_STOPS = ["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"];
@@ -74,9 +80,8 @@ function AnalysisResults({ analysis, selectedId, onSelect, onClear }: {
     : <TurbineRanking record={analysis.record} selectedId={selectedId} onSelect={onSelect} />;
 }
 
-function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotionChange, analysis, selectedId, onSelect, onClear }: {
-  bearing: number;
-  onBearingChange: (bearing: number) => void;
+function AnalysisPanel({ scenario, reducedMotion, onReducedMotionChange, analysis, selectedId, onSelect, onClear }: {
+  scenario: Scenario;
   reducedMotion: boolean;
   onReducedMotionChange: (reduced: boolean) => void;
   analysis: AnalysisState;
@@ -85,6 +90,9 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
   onClear: () => void;
 }) {
   const record = analysis.status === "ready" ? analysis.record : null;
+  const bearing = scenario.bearing;
+  const onBearingChange = scenario.setBearing;
+  const scene = scenario.state.status === "ready" ? scenario.state.scene : null;
   return (
     <aside className="analysis-panel" aria-label="Wind field controls">
       <div>
@@ -94,6 +102,8 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
           <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground" />
         </button>
       </div>
+      <Separator />
+      <ScenarioPicker scenario={scenario} />
       <Separator />
       <div>
         <div className="flex items-center justify-between"><p className="eyebrow">Wind bearing</p><Compass aria-hidden="true" className="size-4 text-lime-300" /></div>
@@ -109,6 +119,10 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
       </div>
       <Separator />
       <AnalysisResults analysis={analysis} selectedId={selectedId} onSelect={onSelect} onClear={onClear} />
+      <Separator />
+      <ComparisonPanel request={scenario.request} selectedId={selectedId} onSelect={onSelect} />
+      <Separator />
+      <AnnualPanel scene={scene} />
       <Separator />
       <div>
         <p className="eyebrow">Field conditions</p>
@@ -129,6 +143,24 @@ function AnalysisPanel({ bearing, onBearingChange, reducedMotion, onReducedMotio
       <Button className="mt-auto w-full" variant={reducedMotion ? "default" : "outline"} onClick={() => onReducedMotionChange(!reducedMotion)} aria-pressed={reducedMotion}><Pause aria-hidden="true" className="size-3.5" /> {reducedMotion ? "Resume particles" : "Pause particles"}</Button>
     </aside>
   );
+}
+
+/**
+ * The ground the scene draws, taken from the request the server solved.
+ *
+ * Before step 11 the mesh came from an asset compiled into the client and the solve from a
+ * copy of it on the server, kept in step by a test. Reading it off the request means an
+ * imported scene renders its own hill, and the drawn ground is the ground the flow was
+ * computed over by construction rather than by agreement.
+ */
+function sceneTerrain(request: FieldRequest): SceneTerrain {
+  return {
+    columns: request.terrain.columns,
+    rows: request.terrain.rows,
+    cellSizeEastingM: request.terrain.cell_size_easting_m,
+    cellSizeNorthingM: request.terrain.cell_size_northing_m,
+    elevationsM: request.terrain.elevations_m,
+  };
 }
 
 type ViewState = { yaw: number; pitch: number; zoom: number };
@@ -201,7 +233,7 @@ function TurbineInfo({ analysis, onClose }: { analysis: AnalysisState; onClose: 
   );
 }
 
-function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, onReducedMotionChange, provenance }: {
+function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, onReducedMotionChange, provenance, scenario }: {
   request: unknown;
   analysis: AnalysisState;
   selectedId: string | null;
@@ -209,6 +241,7 @@ function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, 
   reducedMotion: boolean;
   onReducedMotionChange: (reduced: boolean) => void;
   provenance: ProvenanceState;
+  scenario: Scenario;
 }) {
   const [view, setView] = useState(INITIAL_VIEW);
   const [isDragging, setIsDragging] = useState(false);
@@ -306,7 +339,23 @@ function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, 
       onKeyDown={handleKeyDown}
     >
       <div className="scene-world" data-testid="scene-world">
-        <SpatialFieldViewport request={request} analysis={analysis} selectedId={selectedId} onSelect={onSelect} reducedMotion={reducedMotion} view={view} />
+        {scenario.state.status === "loading" ? (
+          <div className="field-state" role="status">Loading scene…</div>
+        ) : scenario.state.status === "error" ? (
+          <div className="field-state field-error" role="alert">
+            {scenario.state.error}. Start the Kestrel server and reload.
+          </div>
+        ) : (
+          <SpatialFieldViewport
+            request={request}
+            analysis={analysis}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            reducedMotion={reducedMotion}
+            view={view}
+            terrain={sceneTerrain(scenario.state.request)}
+          />
+        )}
       </div>
       <div className="absolute left-5 top-5 flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] backdrop-blur-md"><span className="size-1.5 rounded-full bg-lime-300 shadow-[0_0_12px_#bef264]" /> Desktop preview</div>
       <div className="absolute right-5 top-5 flex gap-2">
@@ -335,17 +384,23 @@ function ScenePreview({ request, analysis, selectedId, onSelect, reducedMotion, 
 
 export function ViewerWorkspace() {
   const [panelOpen, setPanelOpen] = useState(false);
-  const [bearing, setBearing] = useState(210);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false);
-  // One request object describes one scene. The volume and the per-turbine figures are read
+  // One request object describes one scene, and it now comes from a scene file rather than
+  // from a constant compiled into this build. The volume and the per-turbine figures are read
   // off it by two endpoints, which is what keeps the picture and the table talking about the
   // same farm.
-  const request = useMemo(() => ({
-    ...ASKERVEIN_FIELD_REQUEST,
-    wind: { ...ASKERVEIN_FIELD_REQUEST.wind, bearing_deg: bearing },
-  }), [bearing]);
+  const scenario = useScenario();
+  const request = scenario.request;
   const analysis = useAnalysis(request);
+  // Selection belongs to a scene, not to the session. Turbine ids are positional — `t-r2c1`
+  // exists in both bundled scenes and means a different machine in each — so carrying a
+  // selection across a scene change would silently re-point the attribution panel at a
+  // different turbine of the same name.
+  const sceneId = scenario.state.status === "ready" ? scenario.state.sceneId : null;
+  useEffect(() => {
+    setSelectedId(null);
+  }, [sceneId]);
   // Fetched once at the workspace root rather than inside the panel, so the model version
   // is available to anything that displays a number without each consumer refetching.
   const provenance = useProvenance();
@@ -355,8 +410,7 @@ export function ViewerWorkspace() {
       <div className="workspace-grid">
         <div className={panelOpen ? "mobile-panel is-open" : "mobile-panel"}>
           <AnalysisPanel
-            bearing={bearing}
-            onBearingChange={setBearing}
+            scenario={scenario}
             reducedMotion={reducedMotion}
             onReducedMotionChange={setReducedMotion}
             analysis={analysis}
@@ -365,7 +419,7 @@ export function ViewerWorkspace() {
             onClear={() => setSelectedId(null)}
           />
         </div>
-        <ScenePreview request={request} analysis={analysis} selectedId={selectedId} onSelect={setSelectedId} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} provenance={provenance} />
+        <ScenePreview request={request} analysis={analysis} selectedId={selectedId} onSelect={setSelectedId} reducedMotion={reducedMotion} onReducedMotionChange={setReducedMotion} provenance={provenance} scenario={scenario} />
         <aside className="status-rail" aria-label="Performance status"><div className="flex items-center gap-2"><Gauge className="size-3.5 text-lime-300" /><span>Target 60 FPS</span></div><span className="text-muted-foreground">Desktop budget 16.7 ms</span><span className="text-muted-foreground">{provenance.status === "ready" ? `Model ${provenance.record.model_version}` : "Model version unavailable"}</span><span className="ml-auto text-muted-foreground">WebGL 2</span></aside>
       </div>
       <Button className="fixed bottom-5 left-5 z-50 lg:hidden" onClick={() => setPanelOpen((open) => !open)} aria-expanded={panelOpen}><Settings2 className="size-4" /> {panelOpen ? "Close controls" : "Field controls"}</Button>

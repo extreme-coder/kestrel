@@ -17,8 +17,15 @@ export type AnalysisState =
  */
 export function useAnalysis(request: unknown, url = "/api/analysis"): AnalysisState {
   const [state, setState] = useState<AnalysisState>({ status: "loading" });
-  const requestBody = JSON.stringify(request);
+  // Null until the scene has loaded. Sending it anyway posts a JSON `null`, which the server
+  // correctly rejects as a malformed scene — so the panel would show a validation error about
+  // a request the user never made, for the second or two before the real one arrives.
+  const requestBody = request === null || request === undefined ? "" : JSON.stringify(request);
   useEffect(() => {
+    if (!requestBody) {
+      setState({ status: "loading" });
+      return;
+    }
     const controller = new AbortController();
     setState({ status: "loading" });
     fetchAnalysis(JSON.parse(requestBody) as unknown, controller.signal, url)

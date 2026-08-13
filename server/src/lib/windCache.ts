@@ -1,6 +1,6 @@
 import type { DB } from '../db/index.js'
 import type { FetchLike, FetchWindOptions, WindSeries } from './openmeteo.js'
-import { fetchWindSeries } from './openmeteo.js'
+import { SERIES_SCHEMA_VERSION, fetchWindSeries } from './openmeteo.js'
 
 /**
  * Cached, throttled access to the wind source.
@@ -57,7 +57,10 @@ export function cacheKey(options: {
 }): string {
   const lat = options.latitude.toFixed(KEY_PRECISION)
   const lon = options.longitude.toFixed(KEY_PRECISION)
-  return `${lat}:${lon}:${options.startDate}:${options.endDate}`
+  // The schema version leads, so a row written under an older `WindSample` shape can never
+  // be read back as the current one. A 30-day TTL is long enough that a warm cache would
+  // otherwise keep serving series that predate a new field for a month.
+  return `v${SERIES_SCHEMA_VERSION}:${lat}:${lon}:${options.startDate}:${options.endDate}`
 }
 
 export class WindCache {
