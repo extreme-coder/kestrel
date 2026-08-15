@@ -215,9 +215,23 @@ describe("ViewerWorkspace", () => {
     expect(field).toHaveAttribute("data-bearing", "225");
 
     await user.click(screen.getByRole("button", { name: "Open viewer settings" }));
-    await user.click(screen.getByRole("checkbox", { name: "Reduce particle motion" }));
+    await user.click(screen.getByRole("radio", { name: /freeze the particles/i }));
     expect(field).toHaveAttribute("data-reduced-motion", "true");
     expect(screen.getByRole("button", { name: "Resume particles" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("region", { name: "Viewer settings" })).toHaveTextContent(/still snapshot/i);
+  });
+
+  it("remembers the comfort choice for the next session", async () => {
+    const user = userEvent.setup();
+    const { unmount } = await renderReady();
+
+    await user.click(screen.getByRole("button", { name: "Open viewer settings" }));
+    await user.click(screen.getByRole("radio", { name: /freeze the particles/i }));
+    unmount();
+
+    await renderReady();
+    expect(screen.getByTestId("spatial-field")).toHaveAttribute("data-reduced-motion", "true");
+    expect(screen.getByRole("button", { name: "Resume particles" })).toBeInTheDocument();
   });
 
   it("shows turbine details and toggles the performance overlay", async () => {
@@ -382,6 +396,130 @@ describe("ViewerWorkspace", () => {
 
     expect(field).toHaveAttribute("data-yaw", "2");
     expect(field).toHaveAttribute("data-zoom", "1.08");
+  });
+
+  /**
+   * The gap step 12 opened with: selection in the scene was pointer-only, because three.js
+   * paints pixels and produces no accessibility tree. These four cover the layer that fixes
+   * it — that the machines are focusable, that they say which machine they are, that they set
+   * the same selection the list does, and that the picture itself has a description.
+   */
+  it("makes every turbine in the scene a focus stop, worst loss first", async () => {
+    await renderReady();
+    const targets = within(await screen.findByRole("list", { name: "Turbines in the scene" })).getAllByRole("button");
+
+    expect(targets).toHaveLength(4);
+    expect(targets[0]).toHaveAccessibleName(/t-r2c1, number 1 of 4 by wake loss/i);
+    expect(targets[0]).toHaveAccessibleName(/45\.6% lost, 8\.8 m\/s at the rotor/i);
+    expect(targets[3]).toHaveAccessibleName(/number 4 of 4/i);
+  });
+
+  it("selects from the scene by keyboard, and marks what is selected", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+    const targets = within(await screen.findByRole("list", { name: "Turbines in the scene" })).getAllByRole("button");
+
+    targets[0]!.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("region", { name: "Analysis for turbine t-r2c1" })).toBeInTheDocument();
+    expect(screen.getByTestId("spatial-field")).toHaveAttribute("data-selected", "t-r2c1");
+    expect(targets[0]).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("describes what the viewport shows, and re-describes it when the selection changes", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+    await screen.findByRole("region", { name: "Wake loss by turbine" });
+    const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
+    const summary = document.getElementById("scene-summary")!;
+
+    expect(viewport).toHaveAttribute("aria-describedby", "scene-summary");
+    expect(summary).toHaveTextContent(/4 V112-3450 turbines on measured terrain/i);
+    expect(summary).toHaveTextContent(/wind from 210 degrees, south-west/i);
+    expect(summary).toHaveTextContent(/brighter and more densely/i);
+    expect(summary).toHaveTextContent(/ranks t-r2c1 worst/i);
+
+    await user.click(screen.getByRole("button", { name: /scene turbine t-r2c2/i }));
+    expect(summary).toHaveTextContent(/t-r2c2 is selected/i);
+    expect(summary).toHaveTextContent(/tube follows the modelled wake from t-r1c2/i);
+    expect(summary).toHaveTextContent(/nothing is hidden/i);
+  });
+
+  it("states the field is a still snapshot when motion is reduced", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+    await user.click(screen.getByRole("button", { name: "Pause particles" }));
+    expect(document.getElementById("scene-summary")).toHaveTextContent(/particle motion is paused/i);
+  });
+
+  /**
+   * Opening a panel used to leave focus on the button that opened it, so the next Tab went
+   * past the panel rather than into it, and closing left focus on the document body.
+   */
+  it("moves focus into a panel and hands it back on Escape", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+    const trigger = screen.getByRole("button", { name: "About this site" });
+
+    await user.click(trigger);
+    const panel = screen.getByRole("region", { name: "About this site" });
+    expect(panel).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("region", { name: "About this site" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("shows one floating panel at a time", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+
+    await user.click(screen.getByRole("button", { name: "About this site" }));
+    await user.click(screen.getByRole("button", { name: "Show turbine information" }));
+
+    expect(screen.getByRole("region", { name: "Turbine information" })).toBeInTheDocument();
+    // They occupy the same corner. Two open at once put one silently under the other.
+    expect(screen.queryByRole("region", { name: "About this site" })).not.toBeInTheDocument();
+  });
+
+  it("publishes the keyboard controls and the scene description together", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+
+    await user.click(screen.getByRole("button", { name: "View description and keyboard controls" }));
+    const panel = screen.getByRole("region", { name: "View description and keyboard controls" });
+
+    expect(panel).toHaveTextContent(/Rotate the view/i);
+    expect(panel).toHaveTextContent(/Reset the view to where it started/i);
+    expect(panel).toHaveTextContent(/clear the selected turbine/i);
+    // The description is shown, not only spoken: prose nobody can see is prose nobody
+    // notices has gone stale.
+    expect(panel).toHaveTextContent(/4 V112-3450 turbines on measured terrain/i);
+    expect(panel).toHaveTextContent(/needs a pointer or a headset/i);
+  });
+
+  it("resets the view from the keyboard", async () => {
+    await renderReady();
+    const viewport = screen.getByRole("region", { name: /three-dimensional wind field/i });
+    const field = screen.getByTestId("spatial-field");
+
+    fireEvent.keyDown(viewport, { key: "ArrowRight" });
+    fireEvent.keyDown(viewport, { key: "+" });
+    expect(field).toHaveAttribute("data-yaw", "2");
+
+    fireEvent.keyDown(viewport, { key: "0" });
+    expect(field).toHaveAttribute("data-yaw", "0");
+    expect(field).toHaveAttribute("data-zoom", "1");
+  });
+
+  it("does not offer an immersive view it cannot enter", async () => {
+    await renderReady();
+    const immersive = screen.getByRole("button", { name: /enter immersive view/i });
+    // An enabled control that does nothing is worse than an honest disabled one: a keyboard
+    // user gets no feedback at all and cannot tell the difference from a broken app.
+    expect(immersive).toBeDisabled();
+    expect(screen.getByText(/every part of the analysis works here without a headset/i)).toBeInTheDocument();
   });
 
   it("rotates on drag and zooms on wheel", async () => {

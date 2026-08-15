@@ -19,6 +19,11 @@
   button, input { font: inherit; }
   button { cursor: pointer; }
   ::selection { background: rgba(201, 243, 107, 0.25); color: white; }
+  /* A floor under every control, not only the ones that remembered to ask for a ring. Panels
+     take focus programmatically when they open (see `overlay-panel.tsx`) and would otherwise
+     draw the browser's default outline, which is invisible against this background. */
+  :focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; border-radius: 4px; }
+  [tabindex="-1"]:focus-visible { outline-offset: -2px; }
 }
 
 @layer components {
@@ -34,7 +39,24 @@
   .field-error { @apply text-amber-200/80; }
   .site-info { @apply absolute right-5 top-[76px] z-20 w-[min(340px,calc(100%-40px))] rounded-2xl border border-white/10 bg-[#0b1412]/95 p-5 shadow-2xl backdrop-blur-xl; cursor: default; }
   .status-rail { @apply col-start-2 flex items-center gap-6 px-5 text-[10px] font-semibold uppercase tracking-[0.13em]; }
-  .range-control { width: 100%; height: 3px; appearance: none; border-radius: 999px; background: linear-gradient(90deg, #c9f36b 0 var(--range-progress, 58%), rgba(255,255,255,.14) var(--range-progress, 58%)); }
+  /* 24 px of pointer target around a 3 px line. The track was the whole control, so the thing
+     a user had to hit was three pixels tall — WCAG 2.2 asks for 24, and a trackpad user was
+     already fighting it. The gradient moves to the track pseudo-element so the input can be
+     tall without the bar looking it. */
+  .range-control { width: 100%; height: 24px; appearance: none; background: transparent; }
+  .range-control::-webkit-slider-runnable-track { height: 3px; border-radius: 999px; background: linear-gradient(90deg, #c9f36b 0 var(--range-progress, 58%), rgba(255,255,255,.14) var(--range-progress, 58%)); }
+  .range-control::-moz-range-track { height: 3px; border-radius: 999px; background: linear-gradient(90deg, #c9f36b 0 var(--range-progress, 58%), rgba(255,255,255,.14) var(--range-progress, 58%)); }
+  .comfort-choice { @apply flex cursor-pointer items-start gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-white/5; }
+  .scene-controls { @apply absolute right-5 top-5 z-10 flex flex-wrap justify-end gap-2; max-width: calc(100% - 40px); }
+  .preview-badge { @apply absolute left-5 top-5 flex items-center gap-2 rounded-full border border-white/10 bg-black/25 px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] backdrop-blur-md; }
+  /* The turbines in the scene, as focus stops. `pointer-events: none` on purpose: a mouse
+     user selects by clicking the machine itself through three.js's raycaster, and letting an
+     invisible button intercept that would retire the only test that proves the picture is
+     interactive. See `SceneTargets.tsx`. */
+  .scene-targets { position: absolute; inset: 0; margin: 0; padding: 0; list-style: none; pointer-events: none; }
+  .scene-target { position: absolute; width: 44px; height: 44px; translate: -50% -50%; border: 0; border-radius: 999px; background: transparent; outline: none; }
+  .scene-target.is-selected { box-shadow: inset 0 0 0 2px rgba(201, 243, 107, .5); }
+  .scene-target:focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; background: rgba(201, 243, 107, .12); }
   .turbine-info { @apply absolute left-5 top-[76px] z-20 w-[min(320px,calc(100%-40px))] rounded-2xl border border-white/10 bg-[#0b1412]/95 p-5 shadow-2xl backdrop-blur-xl; cursor: default; }
   /* A row is a control, not a label: selection is one piece of state and this list is one of
      its two presentations, so it has to be operable without a pointer. */
@@ -71,14 +93,26 @@
 
 @media (max-width: 1023px) {
   .workspace-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, calc(100vh - 116px)) 40px; }
-  .mobile-panel { position: fixed; inset: 76px auto 0 0; z-index: 40; width: min(340px, calc(100vw - 24px)); transform: translateX(-105%); transition: transform .25s ease; box-shadow: 18px 0 50px rgba(0,0,0,.45); }
-  .mobile-panel.is-open { transform: translateX(0); }
-  .status-rail { grid-column: 1; }
+  /* `visibility: hidden` and not only a transform. Translated off-screen the panel is still
+     in the Tab order, so a keyboard user on a phone fell through the whole closed panel —
+     scene picker, slider, ranked list — before reaching anything visible. `visibility` takes
+     it out of the focus order and still animates. */
+  .mobile-panel { position: fixed; inset: 76px auto 0 0; z-index: 40; width: min(340px, calc(100vw - 24px)); transform: translateX(-105%); visibility: hidden; transition: transform .25s ease, visibility .25s ease; box-shadow: 18px 0 50px rgba(0,0,0,.45); }
+  .mobile-panel.is-open { transform: translateX(0); visibility: visible; }
+  /* Cleared for the fixed "Field controls" button, which is pinned over this strip below the
+     large breakpoint and was sitting on top of the model version. */
+  .status-rail { grid-column: 1; padding-left: 176px; }
 }
 
 @media (max-width: 639px) {
   .scene-preview { margin: 8px 8px 0; border-radius: 22px; min-height: 480px; }
-  .status-rail { gap: 12px; padding-inline: 14px; }
+  .status-rail { gap: 12px; padding-left: 176px; padding-right: 14px; }
   .status-rail span:nth-child(2) { display: none; }
-  .scene-preview > .absolute.right-5.top-5 > button:nth-child(n+3) { display: none; }
+  /* The viewport controls used to hide everything past the second button here, which took
+     turbine information, the accuracy record and the comfort settings off the phone
+     entirely — three of them things this project claims are non-negotiable. They wrap now,
+     and the decorative badge that a full row of controls would sit on top of — and which
+     says "desktop preview" on a phone — goes instead. */
+  .scene-controls { top: 12px; right: 12px; gap: 8px; }
+  .preview-badge { display: none; }
 }

@@ -2,20 +2,15 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { useLayoutEffect } from "react";
 import { SpatialField } from "./SpatialField";
 import { useVelocityField } from "./useVelocityField";
+import { SCENE_CAMERA, cameraPosition } from "./project";
+import type { SpatialFieldView } from "./project";
 import type { AnalysisState } from "@/features/analysis/useAnalysis";
 import { emphasisPath, involvedTurbineIds } from "@/features/analysis/analysis";
 import { SiteScene } from "@/features/site/SiteScene";
 import type { SceneTerrain } from "@/features/site/SiteScene";
 
-export type SpatialFieldView = { yaw: number; pitch: number; zoom: number };
-
-export function cameraPosition({ yaw, pitch, zoom }: SpatialFieldView): [number, number, number] {
-  const radius = 1_200 / zoom;
-  const azimuth = yaw * Math.PI / 180;
-  const elevation = (20 + pitch) * Math.PI / 180;
-  const horizontal = Math.cos(elevation) * radius;
-  return [Math.sin(azimuth) * horizontal, Math.sin(elevation) * radius, Math.cos(azimuth) * horizontal];
-}
+export { cameraPosition };
+export type { SpatialFieldView };
 
 function CameraRig({ view }: { view: SpatialFieldView }) {
   const camera = useThree((state) => state.camera);
@@ -58,10 +53,15 @@ export function SpatialFieldViewport({
   return (
     <Canvas
       className="spatial-field-canvas"
-      camera={{ position: [0, 420, 1150], fov: 48, near: 1, far: 5000 }}
+      camera={{ position: cameraPosition(view), ...SCENE_CAMERA }}
       gl={{ antialias: false, powerPreference: "high-performance" }}
       dpr={[1, 1.5]}
-      fallback={<div className="field-state field-error" role="alert">WebGL 2 is required to display this field.</div>}
+      // No `role="alert"` here. R3F renders this as children of the `<canvas>` element —
+      // HTML's own fallback-content slot — which browsers expose to assistive technology even
+      // when the canvas is drawing perfectly well. As an alert it announced "WebGL 2 is
+      // required" on every successful load, which is both false and assertive. Plain text is
+      // still read by anyone whose browser genuinely cannot render the canvas.
+      fallback={<p className="field-state field-error">WebGL 2 is required to display this field.</p>}
     >
       <CameraRig view={view} />
       <color attach="background" args={["#08100f"]} />
