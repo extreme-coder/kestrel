@@ -28,8 +28,19 @@ export type SpatialFieldProps = {
   particleCount?: number;
   paused?: boolean;
   reducedMotion?: boolean;
+  /** Fraction of particles still drawn where the flow has stopped. See `shaders.ts`. */
+  densityFloor?: number;
   onFrame?: (milliseconds: number) => void;
 };
+
+/**
+ * How sparse the slowest flow is drawn.
+ *
+ * Low enough that a wake core reads as emptier at a glance, high enough that the volume does
+ * not develop holes a user could mistake for missing data. Measured by eye against the
+ * demonstration array; step 14 owns anything that has to be measured by instrument.
+ */
+export const DEFAULT_DENSITY_FLOOR = 0.2;
 
 function makeTarget(size: number) {
   const target = new WebGLRenderTarget(size, size, {
@@ -62,7 +73,14 @@ function makeInitialPositions(size: number, seed = 0x6b657374) {
   return texture;
 }
 
-export function SpatialField({ field, particleCount = 65_536, paused = false, reducedMotion = false, onFrame }: SpatialFieldProps) {
+export function SpatialField({
+  field,
+  particleCount = 65_536,
+  paused = false,
+  reducedMotion = false,
+  densityFloor = DEFAULT_DENSITY_FLOOR,
+  onFrame,
+}: SpatialFieldProps) {
   const { gl } = useThree();
   const lines = useRef<LineSegments>(null);
   const accumulator = useRef(0);
@@ -117,11 +135,18 @@ export function SpatialField({ field, particleCount = 65_536, paused = false, re
         previousPositions: { value: initialPositions },
         velocityField: { value: velocityTexture },
         velocityScale: { value: field.velocityScaleMs },
+        densityFloor: { value: densityFloor },
         fieldSize: { value: fieldSize },
       },
     });
     return { velocityTexture, initialPositions, targets, simulationScene, simulationCamera, simulationGeometry, simulationMaterial, geometry, material, readIndex: 0 as 0 | 1, initialized: false };
   }, [field, particleCount]);
+
+  // A uniform, not a rebuild: `resources` owns every GPU allocation in this component, so
+  // putting the floor in its dependency list would tear down 64k particles to change a float.
+  useEffect(() => {
+    resources.material.uniforms.densityFloor!.value = densityFloor;
+  }, [resources, densityFloor]);
 
   useEffect(() => () => {
     resources.velocityTexture.dispose();

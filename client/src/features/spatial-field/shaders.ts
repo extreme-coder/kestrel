@@ -42,17 +42,61 @@ export const advectFragmentShader = /* glsl */ `
   }
 `;
 
+/**
+ * Speed reaches the screen three ways: hue, trail length, and now population.
+ *
+ * `densityFloor` is the fraction of particles still drawn where the flow has stopped. Each
+ * particle holds one fixed lottery number for its lifetime and is drawn only while the local
+ * speed buys it in, so a wake core is visibly *emptier* than the free stream and not merely
+ * a different colour. `P4-PROJECT-BIBLE.md` §5 requires this — "speed maps to colour **and**
+ * particle density, so the data survives monochrome vision" — and persona Rowan is the only
+ * persona driving it, which is exactly the kind of row that gets cut.
+ *
+ * The threshold is crossed through a smoothstep rather than as a step, because a fixed
+ * lottery with a hard cutoff makes particles blink in and out as they drift across a speed
+ * contour, and blinking is the one thing a reduced-motion setting cannot fix.
+ *
+ * ## Why the response is cubic
+ *
+ * Because the data does not use the bottom of the scale. `speedHint` is speed over
+ * `velocityScale`, and `velocityScale` is the KFLD quantization scale, so a histogram of the
+ * demonstration volume (32 x 32 x 8, scale 11.75 m/s) puts **47% of cells at 1.0 or above and
+ * 99% above 0.5** — the wakes live between 0.6 and 0.9 and nothing at all lives below it.
+ *
+ * A linear ramp therefore spends almost its whole range on values the field never takes, and
+ * separates a deep wake from the free stream by about 24% of particle density. The cubic
+ * spends its range where the data is and separates them by about 52%, which is the difference
+ * between an encoding a colourblind user can read and one they cannot.
+ *
+ * It stays monotonic in absolute speed, so "faster is denser" remains true — this is a choice
+ * of response curve, the same choice picking a colour scale's domain makes, not a different
+ * variable.
+ *
+ * ⚠️ The same histogram says the **colour** encoding saturates over half the volume, since
+ * viridis is driven by the same clamped `speedHint`. That is a property of the KFLD scale
+ * rather than of this shader, and changing it means changing the volume format and both
+ * persistent caches. Recorded rather than fixed here.
+ */
 export const trailVertexShader = /* glsl */ `
   precision highp float;
   precision highp sampler3D;
+  #define DENSITY_GAMMA 3.0
   uniform sampler2D currentPositions;
   uniform sampler2D previousPositions;
   uniform sampler3D velocityField;
   uniform float velocityScale;
+  uniform float densityFloor;
   uniform vec3 fieldSize;
   in vec2 particleUv;
   out float speedHint;
   out float trailFade;
+  out float densityFade;
+
+  float lottery(vec2 p) {
+    vec3 q = fract(vec3(p.xyx) * 0.1031);
+    q += dot(q, q.yzx + 33.33);
+    return fract((q.x + q.y) * q.z);
+  }
 
   void main() {
     vec3 current = texture(currentPositions, particleUv).xyz;
@@ -66,6 +110,8 @@ export const trailVertexShader = /* glsl */ `
     world.z = (normalizedPosition.y - 0.5) * fieldSize.y;
     speedHint = clamp(length(velocity) / max(velocityScale, 0.001), 0.0, 1.0);
     trailFade = position.x;
+    float admitted = mix(densityFloor, 1.0, pow(speedHint, DENSITY_GAMMA));
+    densityFade = smoothstep(0.0, 0.12, admitted - lottery(particleUv));
     gl_Position = projectionMatrix * modelViewMatrix * vec4(world, 1.0);
   }
 `;
@@ -74,6 +120,7 @@ export const trailFragmentShader = /* glsl */ `
   precision highp float;
   in float speedHint;
   in float trailFade;
+  in float densityFade;
   out vec4 color;
 
   vec3 viridis(float t) {
@@ -83,5 +130,9 @@ export const trailFragmentShader = /* glsl */ `
     return t < 0.5 ? mix(c0, c1, t * 2.0) : mix(c1, c2, (t - 0.5) * 2.0);
   }
 
-  void main() { color = vec4(viridis(speedHint), mix(0.08, 0.8, trailFade)); }
+  void main() {
+    float alpha = mix(0.08, 0.8, trailFade) * densityFade;
+    if (alpha < 0.004) discard;
+    color = vec4(viridis(speedHint), alpha);
+  }
 `;

@@ -21,6 +21,29 @@ function signedKilowatts(delta: number): string {
 }
 
 /**
+ * The same figure, said out loud.
+ *
+ * "−9.1 pp" is four glyphs a sighted reader decodes instantly and a screen reader may render
+ * as "9.1 pp", "minus nine point one pee pee", or nothing at all — the minus sign here is
+ * U+2212, which several readers skip. In a column of deltas that is not a formatting quirk:
+ * it inverts the finding. So the display string stays typographic and is hidden from the
+ * reader, and these carry the meaning instead.
+ *
+ * Both thresholds match what the display rounds to, so a cell never reads "no change" beside
+ * a printed "+0.0 pp", or the reverse.
+ */
+function spokenPoints(delta: number): string {
+  const magnitude = Math.abs(delta * 100);
+  if (magnitude < 0.05) return "no change";
+  return `${magnitude.toFixed(1)} percentage points ${delta > 0 ? "more" : "less"} loss`;
+}
+
+function spokenKilowatts(delta: number): string {
+  if (Math.abs(delta) < 0.5) return "no change";
+  return `${kilowatts(Math.abs(delta))} ${delta > 0 ? "more" : "less"}`;
+}
+
+/**
  * Which direction is good.
  *
  * More power is better; more loss is worse. The two deltas have opposite senses and no naming
@@ -109,7 +132,7 @@ export function ComparisonPanel({
             </span>
             <button
               type="button"
-              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline"
+              className="inline-flex items-center gap-1 rounded px-2 py-1.5 text-[11px] text-muted-foreground underline"
               onClick={() => setBaseline(null)}
             >
               <PinOff aria-hidden="true" className="size-3" /> Unpin
@@ -157,10 +180,14 @@ function ComparisonResult({
     <div className="mt-4">
       <p className="text-xs leading-relaxed text-white/80">
         {record.baseline.bearing_deg}° → {record.candidate.bearing_deg}°:{" "}
-        <strong className="font-semibold">{signedKilowatts(farm.delta_total_net_power_kw)}</strong> across the farm,{" "}
-        {verdict(farm.delta_total_net_power_kw, "higher")}. Wake loss{" "}
+        <strong className="font-semibold">
+          <span aria-hidden="true">{signedKilowatts(farm.delta_total_net_power_kw)}</span>
+          <span className="sr-only">{spokenKilowatts(farm.delta_total_net_power_kw)}</span>
+        </strong>{" "}
+        across the farm, {verdict(farm.delta_total_net_power_kw, "higher")}. Wake loss{" "}
         {percent(farm.baseline_farm_wake_loss_fraction)} → {percent(farm.candidate_farm_wake_loss_fraction)} (
-        {points(farm.delta_farm_wake_loss_fraction)}).
+        <span aria-hidden="true">{points(farm.delta_farm_wake_loss_fraction)}</span>
+        <span className="sr-only">{spokenPoints(farm.delta_farm_wake_loss_fraction)}</span>).
       </p>
 
       {/* The T3 answer in one sentence. "Nothing moved" is a real finding and has to be said
@@ -188,14 +215,22 @@ function ComparisonResult({
 
       <table className="mt-3 w-full text-[11px] tabular-nums">
         <caption className="sr-only">
-          Per-turbine change from the baseline. Negative loss change is an improvement.
+          Every turbine, comparing {record.candidate.bearing_deg} degrees against the pinned baseline at{" "}
+          {record.baseline.bearing_deg} degrees. Each row gives the turbine, its wake loss at the candidate
+          bearing, how much that loss moved, and how much net power moved. Less loss and more power are better.
         </caption>
         <thead className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
           <tr>
             <th scope="col" className="pb-1 text-left font-semibold">Turbine</th>
-            <th scope="col" className="pb-1 text-right font-semibold">Loss</th>
-            <th scope="col" className="pb-1 text-right font-semibold">Change</th>
-            <th scope="col" className="pb-1 text-right font-semibold">Net</th>
+            <th scope="col" className="pb-1 text-right font-semibold">
+              Loss<span className="sr-only"> at {record.candidate.bearing_deg} degrees</span>
+            </th>
+            <th scope="col" className="pb-1 text-right font-semibold">
+              Change<span className="sr-only"> in wake loss</span>
+            </th>
+            <th scope="col" className="pb-1 text-right font-semibold">
+              Net<span className="sr-only"> power change</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -207,21 +242,31 @@ function ComparisonResult({
               <th scope="row" className="py-1 text-left font-normal">
                 <button
                   type="button"
-                  className="underline-offset-2 hover:underline"
+                  className="rounded px-1 py-1 underline-offset-2 hover:underline"
                   onClick={() => onSelect(delta.turbine_id)}
                   aria-pressed={delta.turbine_id === selectedId}
                 >
                   {delta.turbine_id}
+                  {/* A coloured interpunct with a tooltip said this to a pointer and to nobody
+                      else. The claim — that the model now blames a different machine — is the
+                      T3 answer in miniature, so it has to be readable. */}
+                  {delta.dominant_contributor_changed ? (
+                    <span className="sr-only">. The model&rsquo;s account of the cause changed.</span>
+                  ) : null}
                 </button>
                 {delta.dominant_contributor_changed ? (
-                  <span className="ml-1 text-lime-300" title="The model's account of the cause changed">
-                    ·
-                  </span>
+                  <span className="ml-1 text-lime-300" aria-hidden="true">·</span>
                 ) : null}
               </th>
               <td className="py-1 text-right">{percent(delta.candidate_wake_loss_fraction)}</td>
-              <td className="py-1 text-right">{points(delta.delta_wake_loss_fraction)}</td>
-              <td className="py-1 text-right">{signedKilowatts(delta.delta_net_power_kw)}</td>
+              <td className="py-1 text-right">
+                <span aria-hidden="true">{points(delta.delta_wake_loss_fraction)}</span>
+                <span className="sr-only">{spokenPoints(delta.delta_wake_loss_fraction)}</span>
+              </td>
+              <td className="py-1 text-right">
+                <span aria-hidden="true">{signedKilowatts(delta.delta_net_power_kw)}</span>
+                <span className="sr-only">{spokenKilowatts(delta.delta_net_power_kw)}</span>
+              </td>
             </tr>
           ))}
         </tbody>

@@ -118,26 +118,46 @@ function AnnualResult({ record }: { record: AnnualRecord }) {
         and this farm moves several points of loss across 5°.
       </p>
 
-      <ol className="mt-4 space-y-1" aria-label="Wake loss by wind direction">
-        {record.sectors.map((sector) => (
-          <li key={sector.sector_bearing_deg} className="flex items-center gap-2 text-[11px] tabular-nums">
-            <span className="w-10 shrink-0 text-right text-muted-foreground">{sector.sector_bearing_deg}°</span>
-            <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
-              <span
-                className="block h-full rounded-full bg-lime-300/70"
-                style={{ width: `${Math.min(100, sector.wake_loss_fraction * 200)}%` }}
-              />
-            </span>
-            <span className="w-11 shrink-0 text-right">{percent(sector.wake_loss_fraction)}</span>
-            <span className="w-10 shrink-0 text-right text-muted-foreground">
-              {percent(sector.sector_weight, 0)}
-            </span>
-          </li>
-        ))}
-      </ol>
-      <p className="mt-1 text-[10px] text-muted-foreground">
-        Loss from each direction, and how much of the year blows from it.
-      </p>
+      {/* A table, not a list of bars. The bars carried the finding and the three numbers beside
+          them were unlabelled columns, so a screen reader read "210 degrees, 8.6%, 14%" with
+          nothing to say which was loss and which was frequency — the exact pair this panel
+          exists to keep apart. The bar stays as the visual and is hidden from the reader. */}
+      <table className="mt-4 w-full text-[11px] tabular-nums">
+        <caption className="sr-only">
+          Wake loss by wind direction, and the share of the year that blows from each.
+        </caption>
+        <thead className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+          <tr>
+            <th scope="col" className="pb-1 text-left font-semibold">Direction</th>
+            <th scope="col" className="pb-1 text-right font-semibold">Loss</th>
+            <th scope="col" className="pb-1 text-right font-semibold">
+              Hours<span className="sr-only"> — share of the year</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {record.sectors.map((sector) => (
+            <tr key={sector.sector_bearing_deg}>
+              <th scope="row" className="py-0.5 text-left font-normal text-muted-foreground">
+                {sector.sector_bearing_deg}°
+                <span className="sr-only"> {bearingLabel(sector.sector_bearing_deg)}</span>
+              </th>
+              <td className="w-full py-0.5 pl-2 pr-2">
+                <span className="flex items-center gap-2">
+                  <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10" aria-hidden="true">
+                    <span
+                      className="block h-full rounded-full bg-lime-300/70"
+                      style={{ width: `${Math.min(100, sector.wake_loss_fraction * 200)}%` }}
+                    />
+                  </span>
+                  <span className="w-11 shrink-0 text-right">{percent(sector.wake_loss_fraction)}</span>
+                </span>
+              </td>
+              <td className="py-0.5 text-right text-muted-foreground">{percent(sector.sector_weight, 0)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
 
       <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">{record.provenance.wake_loss_framing}</p>
     </div>

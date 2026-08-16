@@ -15,6 +15,7 @@ import type { Scenario } from "./useScenario";
  */
 export function ScenarioPicker({ scenario }: { scenario: Scenario }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const openButton = useRef<HTMLButtonElement>(null);
   const { catalogue, state, notice } = scenario;
   const currentId = state.status === "ready" ? state.sceneId : null;
   const imported = state.status === "ready" && state.sourceName !== "bundled";
@@ -22,18 +23,18 @@ export function ScenarioPicker({ scenario }: { scenario: Scenario }) {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <p className="eyebrow">Scene</p>
+        {/* The label, rather than a paragraph beside a screen-reader-only one that said
+            something else. The select is not "bundled scene" once a file has been opened. */}
+        <label className="eyebrow" htmlFor="scene-select">Scene</label>
         {imported ? (
           <span className="text-[10px] uppercase tracking-[0.14em] text-lime-300">Imported</span>
         ) : null}
       </div>
 
-      <label className="sr-only" htmlFor="scene-select">
-        Bundled scene
-      </label>
       <select
         id="scene-select"
         className="mt-3 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm"
+        aria-describedby="scene-description"
         value={imported ? "" : currentId ?? ""}
         onChange={(event) => scenario.loadBundled(event.currentTarget.value)}
         disabled={!catalogue}
@@ -46,12 +47,12 @@ export function ScenarioPicker({ scenario }: { scenario: Scenario }) {
         ))}
       </select>
 
-      {state.status === "ready" ? (
-        <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-          {catalogue?.scenes.find((scene) => scene.id === state.sceneId)?.description ??
-            "Loaded from a file on this computer. Nothing was uploaded."}
-        </p>
-      ) : null}
+      <p id="scene-description" className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+        {state.status === "ready"
+          ? catalogue?.scenes.find((scene) => scene.id === state.sceneId)?.description ??
+            "Loaded from a file on this computer. Nothing was uploaded."
+          : "Choose a bundled scene, or open a scene file from this computer."}
+      </p>
 
       <input
         ref={fileInput}
@@ -65,9 +66,14 @@ export function ScenarioPicker({ scenario }: { scenario: Scenario }) {
           if (file) scenario.importFile(file);
           // Reset so the same file can be re-imported after being edited on disk.
           event.currentTarget.value = "";
+          // The browser's file dialog takes focus and hands it back to a hidden input with
+          // `tabIndex={-1}`, so the next Tab starts from the top of the document. Put it back
+          // on the control that opened the dialog, which is also where the notice appears.
+          openButton.current?.focus();
         }}
       />
       <Button
+        ref={openButton}
         variant="outline"
         className="mt-3 w-full"
         onClick={() => fileInput.current?.click()}
@@ -90,9 +96,9 @@ export function ScenarioPicker({ scenario }: { scenario: Scenario }) {
               ))}
             </ul>
           ) : null}
-          <p className="mt-2 text-[11px] text-amber-100/60">
+          <p className="mt-2 text-[11px] text-amber-100/70">
             The scene on screen has not changed.{" "}
-            <button type="button" className="underline" onClick={scenario.dismissNotice}>
+            <button type="button" className="rounded px-2 py-1.5 underline" onClick={scenario.dismissNotice}>
               Dismiss
             </button>
           </p>

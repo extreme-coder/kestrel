@@ -122,9 +122,65 @@ describe("ComparisonPanel", () => {
 
     const section = screen.getByRole("region", { name: "Scenario comparison" });
     await within(section).findByText(/across the farm/);
-    expect(section).toHaveTextContent("+1,153 kW across the farm, better");
+    expect(section).toHaveTextContent("+1,153 kW");
+    expect(section).toHaveTextContent(/across the farm, better/);
     // Percentage points, not percent: "16% loss" and "−9 points of loss" are different claims.
     expect(section).toHaveTextContent("−9.2 pp");
+  });
+
+  /**
+   * The sign is the finding, and the sign is the part a screen reader is least likely to say.
+   * U+2212 is skipped outright by some readers, so "−9.2 pp" can arrive as "9.2 pp" — the
+   * opposite conclusion, delivered confidently. Each signed figure therefore carries a spoken
+   * twin, and the two must agree about which direction things moved.
+   */
+  it("says which way every signed figure moved, in words", async () => {
+    stub(record());
+    const user = userEvent.setup();
+    const { rerender } = render(<ComparisonPanel request={REQUEST} selectedId={null} onSelect={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /pin as baseline/i }));
+    rerender(<ComparisonPanel request={CANDIDATE} selectedId={null} onSelect={() => {}} />);
+
+    const section = screen.getByRole("region", { name: "Scenario comparison" });
+    await within(section).findByText(/across the farm/);
+    expect(section).toHaveTextContent("1,153 kW more");
+    expect(section).toHaveTextContent("9.2 percentage points less loss");
+    // The per-turbine row, whose −4.1 pp is the one a reader is most likely to mangle.
+    expect(section).toHaveTextContent("4.1 percentage points less loss");
+    expect(section).toHaveTextContent("193 kW more");
+
+    const table = within(section).getByRole("table");
+    expect(within(table).getByRole("columnheader", { name: /loss at 215 degrees/i })).toBeInTheDocument();
+    expect(within(table).getByRole("columnheader", { name: /change in wake loss/i })).toBeInTheDocument();
+    expect(within(table).getByRole("columnheader", { name: /net power change/i })).toBeInTheDocument();
+  });
+
+  it("says nothing moved rather than printing a signed zero", async () => {
+    const flat = record();
+    flat.turbines[0]!.delta_wake_loss_fraction = 0;
+    flat.turbines[0]!.delta_net_power_kw = 0;
+    stub(flat);
+    const user = userEvent.setup();
+    const { rerender } = render(<ComparisonPanel request={REQUEST} selectedId={null} onSelect={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /pin as baseline/i }));
+    rerender(<ComparisonPanel request={CANDIDATE} selectedId={null} onSelect={() => {}} />);
+
+    const table = await within(screen.getByRole("region", { name: "Scenario comparison" })).findByRole("table");
+    expect(within(table).getAllByText("no change")).toHaveLength(2);
+  });
+
+  it("reads the changed-cause marker instead of showing it as a coloured dot", async () => {
+    const moved = record();
+    moved.turbines[0]!.dominant_contributor_changed = true;
+    stub(moved);
+    const user = userEvent.setup();
+    const { rerender } = render(<ComparisonPanel request={REQUEST} selectedId={null} onSelect={() => {}} />);
+    await user.click(screen.getByRole("button", { name: /pin as baseline/i }));
+    rerender(<ComparisonPanel request={CANDIDATE} selectedId={null} onSelect={() => {}} />);
+
+    const section = screen.getByRole("region", { name: "Scenario comparison" });
+    const row = await within(section).findByRole("button", { name: /t-r2c2/ });
+    expect(row).toHaveAccessibleName(/account of the cause changed/i);
   });
 
   it("keeps the floor-not-a-bound framing on a difference too", async () => {
