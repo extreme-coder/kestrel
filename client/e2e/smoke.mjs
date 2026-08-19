@@ -16,6 +16,9 @@
  * click a machine **in the 3D scene** to trigger an actual raycast against the instanced mesh,
  * pin a baseline, change the wind, and read the deltas.
  *
+ * Its companion is `accessibility.mjs`, which performs the same task without a pointer and at
+ * phone size. Browser setup for both lives in `harness.mjs`.
+ *
  * ## Chrome, not a downloaded browser
  *
  * `puppeteer-core` drives the Chrome already installed on the machine, so nothing fetches a
@@ -23,157 +26,32 @@
  * never frame rate. Step 14 owns performance, and a software rasteriser would libel it.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import puppeteer from "puppeteer-core";
+import {
+  API_URL,
+  APP_URL,
+  DESKTOP,
+  createChecker,
+  launchBrowser,
+  requireStack,
+  textOf,
+  waitFor,
+  waitForLitCanvas,
+  watchPage,
+} from "./harness.mjs";
 
-const APP_URL = process.env.KESTREL_APP_URL ?? "http://127.0.0.1:5173/";
-const API_URL = process.env.KESTREL_API_URL ?? "http://127.0.0.1:8787";
 const OUT_DIR = fileURLToPath(new URL("./output/", import.meta.url));
-
-/**
- * Chrome executable.
- *
- * Resolved from the platform's usual location, overridable for CI. Never downloaded: the
- * point of `puppeteer-core` over `puppeteer` is that the browser is a system dependency.
- */
-function findChrome() {
-  const override = process.env.CHROME_PATH;
-  if (override) return override;
-  const candidates = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-  ];
-  for (const candidate of candidates) if (existsSync(candidate)) return candidate;
-  throw new Error("No Chrome found. Set CHROME_PATH to a Chrome or Chromium binary.");
-}
-
-let failures = 0;
-let checks = 0;
-
-function check(label, condition, detail = "") {
-  checks++;
-  if (condition) {
-    console.log(`  ok   ${label}${detail ? ` — ${detail}` : ""}`);
-  } else {
-    failures++;
-    console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ""}`);
-  }
-}
-
-/** Wait for a predicate evaluated in the page, with a useful message on timeout. */
-async function waitFor(page, description, fn, timeout = 45_000) {
-  try {
-    await page.waitForFunction(fn, { timeout, polling: 250 });
-  } catch {
-    throw new Error(`timed out waiting for ${description}`);
-  }
-}
-
-const textOf = (page, selector) =>
-  page.$eval(selector, (element) => element.textContent?.replace(/\s+/g, " ").trim() ?? "");
-
-/**
- * Wait until the viewport contains a lit frame, and report how lit.
- *
- * Measured from a screenshot rather than `gl.readPixels`, because the drawing buffer is not
- * preserved after a frame — reading it back yields a cleared buffer, which is
- * indistinguishable from a scene that never built. The compositor's output is what a person
- * would see, so it is what to assert on.
- *
- * Without this, every DOM check in this file would pass against a black viewport: the panels
- * are driven by JSON and would be perfectly happy if nothing were ever drawn. Under
- * SwiftShader a screenshot can also land between frames, so this retries.
- */
-async function waitForLitCanvas(page, attempts = 25) {
-  let stats = { mean: 0, brightFraction: 0 };
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const clip = await page.$eval("canvas", (canvas) => {
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: Math.round(rect.x),
-        y: Math.round(rect.y),
-        width: Math.round(rect.width),
-        height: Math.round(rect.height),
-      };
-    });
-    const shot = await page.screenshot({ encoding: "base64", clip });
-    stats = await page.evaluate(async (base64) => {
-      const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-      const offscreen = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const context = offscreen.getContext("2d");
-      context.drawImage(bitmap, 0, 0);
-      const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
-      let sum = 0;
-      let brightPixels = 0;
-      let counted = 0;
-      for (let index = 0; index < data.length; index += 4 * 7) {
-        const luminance = (data[index] + data[index + 1] + data[index + 2]) / 3;
-        sum += luminance;
-        if (luminance > 40) brightPixels++;
-        counted++;
-      }
-      return { mean: Number((sum / counted).toFixed(1)), brightFraction: brightPixels / counted };
-    }, shot);
-    if (stats.brightFraction > 0.2) return stats;
-    await new Promise((resolve) => setTimeout(resolve, 600));
-  }
-  return stats;
-}
+const { check, report } = createChecker();
 
 async function main() {
   mkdirSync(OUT_DIR, { recursive: true });
+  await requireStack();
 
-  // Fail loudly and early if the stack is not up, rather than after a 45 s WebGL timeout.
-  const health = await fetch(`${API_URL}/api/health`).catch(() => null);
-  if (!health?.ok) throw new Error(`Kestrel server is not answering at ${API_URL}. Start it first.`);
-  const page0 = await fetch(APP_URL).catch(() => null);
-  if (!page0?.ok) throw new Error(`No app at ${APP_URL}. Start the Vite dev server first.`);
-
-  const browser = await puppeteer.launch({
-    executablePath: findChrome(),
-    headless: true,
-    args: [
-      "--headless=new",
-      // WebGL2 in headless needs a rasteriser. SwiftShader is software: correct, and slow.
-      "--enable-unsafe-swiftshader",
-      "--use-gl=angle",
-      "--use-angle=swiftshader",
-      "--no-sandbox",
-      "--window-size=1600,1000",
-    ],
-  });
-
+  const browser = await launchBrowser(DESKTOP);
   const page = await browser.newPage();
-  await page.setViewport({ width: 1600, height: 1000, deviceScaleFactor: 1 });
-
-  const consoleErrors = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
-  });
-  page.on("pageerror", (error) => consoleErrors.push(String(error)));
-
-  const failedRequests = [];
-  page.on("requestfailed", (request) => {
-    // `net::ERR_ABORTED` is our own AbortController doing its job. React StrictMode mounts
-    // every effect twice in development, so each hook aborts its first request by design —
-    // treating that as a failure would make the check fail permanently and mean nothing.
-    if (request.failure()?.errorText === "net::ERR_ABORTED") return;
-    failedRequests.push(`${request.url()} ${request.failure()?.errorText}`);
-  });
-  const apiStatuses = new Map();
-  const badResponses = [];
-  page.on("response", (response) => {
-    const url = new URL(response.url());
-    if (url.pathname.startsWith("/api/")) apiStatuses.set(url.pathname, response.status());
-    // Tracked here rather than through console text, because "Failed to load resource: 404"
-    // does not say *which* resource and would make this check unactionable.
-    if (response.status() >= 400) badResponses.push(`${response.status()} ${url.pathname}`);
-  });
+  await page.setViewport({ width: DESKTOP.width, height: DESKTOP.height, deviceScaleFactor: 1 });
+  const { consoleErrors, failedRequests, badResponses, apiStatuses } = watchPage(page);
 
   console.log(`\nHeadless primary-task smoke test\n  app ${APP_URL}\n  api ${API_URL}\n`);
 
@@ -194,17 +72,6 @@ async function main() {
   });
   check("a WebGL2 canvas is rendering", webgl.width > 600, `${webgl.width}x${webgl.height}`);
 
-  /**
-   * Does the viewport actually contain a picture?
-   *
-   * Read from a screenshot rather than `gl.readPixels`, because the drawing buffer is not
-   * preserved after a frame and reading it back gives a cleared buffer — which is
-   * indistinguishable from a scene that never built. The compositor's output is the thing a
-   * person would see, so it is the thing to assert on.
-   *
-   * Without this every DOM check below would pass against a black viewport: the panels are
-   * driven by JSON and would be perfectly happy if nothing were ever drawn.
-   */
   const lit = await waitForLitCanvas(page);
   check(
     "the scene draws a lit frame rather than an empty buffer",
@@ -286,8 +153,14 @@ async function main() {
   const comparison = await textOf(page, '[aria-label="Scenario comparison"]');
   check("the comparison states both bearings", /210° → 215°/.test(comparison));
   check("the comparison answers whether the worst turbine changed", /worst turbine/i.test(comparison));
-  check("the comparison reports a farm-total delta in kW", /[+−]\d[\d,]* kW across the farm/.test(comparison));
+  check("the comparison reports a farm-total delta in kW", /[+−]\d[\d,]* kW/.test(comparison));
   check("the comparison reports changes in percentage points", /[+−]\d+(\.\d+)? pp/.test(comparison));
+  // Every signed figure has a spoken twin, because U+2212 is skipped by some screen readers
+  // and "9.2 pp" instead of "−9.2 pp" is the opposite conclusion stated confidently.
+  check(
+    "every signed figure says which way it moved, in words",
+    /percentage points (more|less) loss/.test(comparison) && /kW (more|less)/.test(comparison),
+  );
   check(
     "the delta carries the same hedge as the absolute figures",
     /floor, not an upper limit/i.test(comparison) && /no better anchored/i.test(comparison),
@@ -333,6 +206,10 @@ async function main() {
   });
   check("a bad scene is rejected with actionable detail", /ben-nevis|layout|wind/i.test(notice), notice.slice(0, 140));
   check("the working scene survives a failed import", /t-r2c1/.test(await textOf(page, "body")));
+  // The file dialog hands focus back to a hidden input, so without an explicit hand-off the
+  // next Tab restarts at the top of the document.
+  const focusAfterImport = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+  check("focus returns to the control that opened the file dialog", /open scene file/i.test(focusAfterImport), focusAfterImport);
 
   // Switching to the 16-turbine study scene exercises the whole scene-driven path: a
   // different turbine model, a different hub height, and a mesh and instance geometry built
@@ -380,8 +257,7 @@ async function main() {
 
   await browser.close();
 
-  console.log(`\n${checks - failures}/${checks} checks passed`);
-  if (failures > 0) process.exit(1);
+  if (report() > 0) process.exit(1);
 }
 
 main().catch((error) => {
